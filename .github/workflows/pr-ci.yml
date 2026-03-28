@@ -89,7 +89,17 @@ jobs:
             -Dsonar.projectName=${{ github.event.repository.name }}-backend
 
       # =========================================================================
-      # BƯỚC 7: Quality Gate Check - BẮT BUỘC PASS
+      # BƯỚC 7: Debug - Check report file location
+      # =========================================================================
+      - name: Check SonarQube Report Location
+        run: |
+          echo "Checking report file location..."
+          ls -la .scannerwork/ || echo ".scannerwork not found in current dir"
+          ls -la src/backend/.scannerwork/ || echo "src/backend/.scannerwork not found"
+          find . -name "report-task.txt" -type f 2>/dev/null || echo "report-task.txt not found anywhere"
+
+      # =========================================================================
+      # BƯỚC 8: Quality Gate Check - BẮT BUỘC PASS
       # =========================================================================
       - name: SonarQube Quality Gate Check
         uses: sonarsource/sonarqube-quality-gate-action@master
@@ -121,7 +131,7 @@ jobs:
           fetch-depth: 0  # SonarQube cần full history
 
       # =========================================================================
-      # BƯỚC 2: Setup Node.js + NPM Caching
+      # BƯỚC 2: Setup Node.js 20 + NPM Caching
       # =========================================================================
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
