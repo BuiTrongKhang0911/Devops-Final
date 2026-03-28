@@ -84,6 +84,10 @@ jobs:
       # =========================================================================
       # BƯỚC 6: SonarQube Scan - Phân tích code quality & security vulnerabilities
       # =========================================================================
+      # LƯU Ý: Cấu hình này dành cho SonarQube Community Edition (miễn phí)
+      # Community Edition KHÔNG hỗ trợ PR analysis, chỉ scan branch thông thường
+      # Nếu dùng Developer Edition trở lên, có thể thêm các property:
+      #   -Dsonar.pullrequest.key, -Dsonar.pullrequest.branch, -Dsonar.pullrequest.base
       - name: SonarQube Scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -95,10 +99,7 @@ jobs:
             -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
             -Dsonar.token=${{ secrets.SONAR_TOKEN }} \
             -Dsonar.projectKey=${{ github.repository_owner }}_${{ github.event.repository.name }} \
-            -Dsonar.projectName=${{ github.event.repository.name }} \
-            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }} \
-            -Dsonar.pullrequest.branch=${{ github.head_ref }} \
-            -Dsonar.pullrequest.base=${{ github.base_ref }}
+            -Dsonar.projectName=${{ github.event.repository.name }}
 
       # =========================================================================
       # BƯỚC 7: Quality Gate Check - BẮT BUỘC PASS mới được merge

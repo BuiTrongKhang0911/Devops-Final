@@ -7,6 +7,13 @@ backend/.mvn/wrapper/
 **/application.properties
 !**/application.properties.example
 
+# Security - Private keys & certificates
+*.pem
+*.key
+*.ppk
+*.p12
+*.pfx
+
 # Node modules
 frontend/node_modules/
 frontend/dist/
