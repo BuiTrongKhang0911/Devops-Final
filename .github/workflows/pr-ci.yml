@@ -89,23 +89,14 @@ jobs:
             -Dsonar.projectName=${{ github.event.repository.name }}-backend
 
       # =========================================================================
-      # BƯỚC 7: Debug - Check report file location
-      # =========================================================================
-      - name: Check SonarQube Report Location
-        run: |
-          echo "Checking report file location..."
-          ls -la .scannerwork/ || echo ".scannerwork not found in current dir"
-          ls -la src/backend/.scannerwork/ || echo "src/backend/.scannerwork not found"
-          find . -name "report-task.txt" -type f 2>/dev/null || echo "report-task.txt not found anywhere"
-
-      # =========================================================================
-      # BƯỚC 8: Quality Gate Check - BẮT BUỘC PASS
+      # BƯỚC 7: Quality Gate Check - BẮT BUỘC PASS
       # =========================================================================
       - name: SonarQube Quality Gate Check
         uses: sonarsource/sonarqube-quality-gate-action@master
         timeout-minutes: 5
         with:
-          scanMetadataReportFile: src/backend/.scannerwork/report-task.txt
+          # Maven tạo report ở target/sonar/, không phải .scannerwork/
+          scanMetadataReportFile: target/sonar/report-task.txt
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -148,11 +139,12 @@ jobs:
         # npm ci: Clean install - nhanh hơn npm install, phù hợp cho CI
 
       # =========================================================================
-      # BƯỚC 4: Run Linter (ESLint nếu có)
+      # BƯỚC 4: Run Linter (ESLint)
       # =========================================================================
-      - name: Run Linter
-        run: npm run lint --if-present
-        # --if-present: Không fail nếu script không tồn tại
+      - name: Run ESLint
+        run: npm run lint -- --max-warnings=10
+        # --max-warnings: Cho phép tối đa 10 warnings, fail nếu vượt quá
+        # Khuyến khích fix warnings nhưng không block pipeline hoàn toàn
 
       # =========================================================================
       # BƯỚC 5: Build frontend (test build có thành công không)
@@ -194,6 +186,15 @@ jobs:
             -Dsonar.sources=src
             -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+
+      # =========================================================================
+      # Debug: Check report file location (Frontend)
+      # =========================================================================
+      - name: Check SonarQube Report Location (Frontend)
+        run: |
+          echo "Checking frontend report file location..."
+          find . -name "report-task.txt" -type f 2>/dev/null || echo "report-task.txt not found"
+          ls -la .scannerwork/ 2>/dev/null || echo ".scannerwork not found in src/frontend"
 
       # =========================================================================
       # BƯỚC 9: Quality Gate Check - BẮT BUỘC PASS
