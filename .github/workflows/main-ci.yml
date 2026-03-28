@@ -1,0 +1,116 @@
+# =============================================================================
+# MAIN-CI.YML - Build & Release Docker Image
+# =============================================================================
+# Mục đích: Đóng gói ứng dụng và đẩy Docker image lên Docker Hub
+# Trigger: Khi code được merge/push vào nhánh main
+# =============================================================================
+
+name: Build & Release Docker
+
+on:
+  push:
+    branches:
+      - main
+
+# Ngăn chặn chạy đồng thời nhiều workflow cho cùng branch
+concurrency:
+  group: main-${{ github.sha }}
+  cancel-in-progress: true
+
+env:
+  # Định nghĩa tên Docker image một lần, dùng lại nhiều nơi
+  DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/spring-boot-app
+
+jobs:
+  build-and-push:
+    name: Build JAR & Push Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      # =========================================================================
+      # BƯỚC 1: Checkout code
+      # =========================================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        # Không cần fetch-depth: 0 vì không chạy SonarQube ở đây
+
+      # =========================================================================
+      # BƯỚC 2: Cài đặt Java 21 (Temurin) + Maven Caching
+      # =========================================================================
+      - name: Setup Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+
+      # =========================================================================
+      # BƯỚC 3: Build JAR artifact (BỎ QUA TESTS)
+      # =========================================================================
+      - name: Build Application JAR
+        run: mvn clean package -DskipTests --batch-mode --no-transfer-progress
+        # -DskipTests: Bỏ qua test vì code đã pass ở PR Quality Gate
+        # Tiết kiệm ~2-3 phút build time
+
+      # =========================================================================
+      # BƯỚC 4: Setup Docker Buildx (hỗ trợ multi-platform build)
+      # =========================================================================
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        # Buildx cung cấp advanced caching và multi-architecture support
+
+      # =========================================================================
+      # BƯỚC 5: Đăng nhập Docker Hub
+      # =========================================================================
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # =========================================================================
+      # BƯỚC 6: Extract metadata cho Docker image
+      # =========================================================================
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            # Tag bằng full commit SHA (40 ký tự) - immutable, traceability cao
+            type=sha,format=long
+            # Tag bằng short commit SHA (7 ký tự) - dễ đọc, dùng cho dev
+            type=sha,format=short
+          # KHÔNG sử dụng tag 'latest' - anti-pattern trong production
+          # Lý do: latest không cho biết version cụ thể, gây khó debug và rollback
+
+      # =========================================================================
+      # BƯỚC 7: Build và Push Docker Image
+      # =========================================================================
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Cache layers để tăng tốc build lần sau
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Thêm build arguments nếu cần
+          build-args: |
+            JAR_FILE=target/*.jar
+
+      # =========================================================================
+      # BƯỚC 8: Output thông tin image đã build
+      # =========================================================================
+      - name: Print Image Info
+        run: |
+          echo "============================================="
+          echo "✅ Docker Image Published Successfully!"
+          echo "============================================="
+          echo "📦 Image: ${{ env.DOCKER_IMAGE }}"
+          echo "🏷️  Tags:"
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/   - /'
+          echo "🔗 Commit: ${{ github.sha }}"
+          echo "============================================="
