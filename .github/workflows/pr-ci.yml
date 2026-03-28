@@ -17,10 +17,19 @@ concurrency:
   group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Định nghĩa working directory cho Maven project
+env:
+  WORKING_DIR: src/backend
+
 jobs:
   quality-gate:
     name: Code Quality & Security Check
     runs-on: ubuntu-latest
+
+    # Set default working directory cho tất cả run steps
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
 
     steps:
       # =========================================================================
@@ -44,6 +53,7 @@ jobs:
           # Tự động cache Maven dependencies (~/.m2/repository)
           # Giảm thời gian build từ ~3-5 phút xuống ~30 giây cho các lần sau
           cache: 'maven'
+          cache-dependency-path: '${{ env.WORKING_DIR }}/pom.xml'
 
       # =========================================================================
       # BƯỚC 3: Kiểm tra Code Style với Checkstyle

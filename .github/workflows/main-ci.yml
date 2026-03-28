@@ -20,6 +20,8 @@ concurrency:
 env:
   # Định nghĩa tên Docker image một lần, dùng lại nhiều nơi
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/spring-boot-app
+  # Working directory cho Maven project
+  WORKING_DIR: src/backend
 
 jobs:
   build-and-push:
@@ -43,11 +45,13 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
           cache: 'maven'
+          cache-dependency-path: '${{ env.WORKING_DIR }}/pom.xml'
 
       # =========================================================================
       # BƯỚC 3: Build JAR artifact (BỎ QUA TESTS)
       # =========================================================================
       - name: Build Application JAR
+        working-directory: ${{ env.WORKING_DIR }}
         run: mvn clean package -DskipTests --batch-mode --no-transfer-progress
         # -DskipTests: Bỏ qua test vì code đã pass ở PR Quality Gate
         # Tiết kiệm ~2-3 phút build time
@@ -90,16 +94,14 @@ jobs:
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v6
         with:
-          context: .
+          # Context là thư mục chứa Dockerfile (src/backend)
+          context: ${{ env.WORKING_DIR }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Cache layers để tăng tốc build lần sau
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Thêm build arguments nếu cần
-          build-args: |
-            JAR_FILE=target/*.jar
 
       # =========================================================================
       # BƯỚC 8: Output thông tin image đã build
@@ -107,10 +109,10 @@ jobs:
       - name: Print Image Info
         run: |
           echo "============================================="
-          echo "✅ Docker Image Published Successfully!"
+          echo "Docker Image Published Successfully!"
           echo "============================================="
-          echo "📦 Image: ${{ env.DOCKER_IMAGE }}"
-          echo "🏷️  Tags:"
+          echo "Image: ${{ env.DOCKER_IMAGE }}"
+          echo "Tags:"
           echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/   - /'
-          echo "🔗 Commit: ${{ github.sha }}"
+          echo "Commit: ${{ github.sha }}"
           echo "============================================="
