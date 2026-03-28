@@ -95,8 +95,9 @@ jobs:
         uses: sonarsource/sonarqube-quality-gate-action@master
         timeout-minutes: 5
         with:
-          # Maven tạo report ở target/sonar/, không phải .scannerwork/
-          scanMetadataReportFile: target/sonar/report-task.txt
+          # Maven tạo report trong src/backend/target/sonar/
+          # Quality Gate action chạy từ root workspace nên cần full path
+          scanMetadataReportFile: src/backend/target/sonar/report-task.txt
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
