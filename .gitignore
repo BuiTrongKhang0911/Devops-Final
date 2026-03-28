@@ -1,7 +1,11 @@
-# Java / Maven
+# Java / Maven - Backend build artifacts
 backend/target/
 backend/.mvn/wrapper/
+**/target/
 .mvn/
+*.class
+*.jar
+*.war
 
 # Application configuration (sensitive data)
 **/application.properties
@@ -14,9 +18,15 @@ backend/.mvn/wrapper/
 *.p12
 *.pfx
 
-# Node modules
+# Node modules - Frontend dependencies & build artifacts
 frontend/node_modules/
 frontend/dist/
+frontend/build/
+**/node_modules/
+**/dist/
+**/build/
+package-lock.json
+yarn.lock
 
 # OS
 .DS_Store
