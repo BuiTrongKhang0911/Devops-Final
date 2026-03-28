@@ -1,0 +1,199 @@
+# =============================================================================
+# MAIN-CI.YML - Build & Release Docker Images
+# =============================================================================
+# Mục đích: Đóng gói Backend + Frontend và đẩy Docker images lên Docker Hub
+# Trigger: Khi code được merge/push vào nhánh main
+# =============================================================================
+
+name: Build & Release Docker
+
+on:
+  push:
+    branches:
+      - main
+
+# Ngăn chặn chạy đồng thời nhiều workflow cho cùng branch
+concurrency:
+  group: main-${{ github.sha }}
+  cancel-in-progress: true
+
+env:
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+
+jobs:
+  # ===========================================================================
+  # JOB 1: BUILD & PUSH BACKEND IMAGE
+  # ===========================================================================
+  build-backend:
+    name: Build Backend Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      # =========================================================================
+      # BƯỚC 1: Checkout code
+      # =========================================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # =========================================================================
+      # BƯỚC 2: Cài đặt Java 21 (Temurin) + Maven Caching
+      # =========================================================================
+      - name: Setup Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+          cache-dependency-path: 'src/backend/pom.xml'
+
+      # =========================================================================
+      # BƯỚC 3: Build JAR artifact (BỎ QUA TESTS)
+      # =========================================================================
+      - name: Build Application JAR
+        working-directory: src/backend
+        run: mvn clean package -DskipTests --batch-mode --no-transfer-progress
+        # -DskipTests: Code đã pass quality gate ở PR, không cần test lại
+
+      # =========================================================================
+      # BƯỚC 4: Setup Docker Buildx
+      # =========================================================================
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # =========================================================================
+      # BƯỚC 5: Đăng nhập Docker Hub
+      # =========================================================================
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # =========================================================================
+      # BƯỚC 6: Extract metadata cho Backend image
+      # =========================================================================
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_USERNAME }}/document-management-backend
+          tags: |
+            type=sha,format=long
+            type=sha,format=short
+
+      # =========================================================================
+      # BƯỚC 7: Build và Push Backend Docker Image
+      # =========================================================================
+      - name: Build and Push Backend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/backend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # BƯỚC 8: Output thông tin Backend image
+      # =========================================================================
+      - name: Print Backend Image Info
+        run: |
+          echo "============================================="
+          echo "Backend Docker Image Published!"
+          echo "============================================="
+          echo "Image: ${{ env.DOCKER_USERNAME }}/document-management-backend"
+          echo "Tags:"
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/   - /'
+          echo "Commit: ${{ github.sha }}"
+          echo "============================================="
+
+  # ===========================================================================
+  # JOB 2: BUILD & PUSH FRONTEND IMAGE
+  # ===========================================================================
+  build-frontend:
+    name: Build Frontend Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      # =========================================================================
+      # BƯỚC 1: Checkout code
+      # =========================================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # =========================================================================
+      # BƯỚC 2: Setup Node.js + NPM Caching
+      # =========================================================================
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'src/frontend/package-lock.json'
+
+      # =========================================================================
+      # BƯỚC 3: Install dependencies & Build static files
+      # =========================================================================
+      - name: Install Dependencies
+        working-directory: src/frontend
+        run: npm ci
+
+      - name: Build Frontend
+        working-directory: src/frontend
+        run: npm run build
+        # Tạo production build trong thư mục dist/
+
+      # =========================================================================
+      # BƯỚC 4: Setup Docker Buildx
+      # =========================================================================
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # =========================================================================
+      # BƯỚC 5: Đăng nhập Docker Hub
+      # =========================================================================
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # =========================================================================
+      # BƯỚC 6: Extract metadata cho Frontend image
+      # =========================================================================
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_USERNAME }}/document-management-frontend
+          tags: |
+            type=sha,format=long
+            type=sha,format=short
+
+      # =========================================================================
+      # BƯỚC 7: Build và Push Frontend Docker Image
+      # =========================================================================
+      - name: Build and Push Frontend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/frontend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # BƯỚC 8: Output thông tin Frontend image
+      # =========================================================================
+      - name: Print Frontend Image Info
+        run: |
+          echo "============================================="
+          echo "Frontend Docker Image Published!"
+          echo "============================================="
+          echo "Image: ${{ env.DOCKER_USERNAME }}/document-management-frontend"
+          echo "Tags:"
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/   - /'
+          echo "Commit: ${{ github.sha }}"
+          echo "============================================="

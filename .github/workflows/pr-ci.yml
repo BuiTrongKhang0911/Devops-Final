@@ -1,0 +1,210 @@
+# =============================================================================
+# PR-CI.YML - Quality Gate & Security Gatekeeper
+# =============================================================================
+# Mục đích: Kiểm duyệt chất lượng code trước khi merge vào main
+# Trigger: Mỗi khi có Pull Request vào nhánh main
+# =============================================================================
+
+name: PR Quality Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+
+# Ngăn chặn chạy đồng thời nhiều workflow cho cùng một PR
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ===========================================================================
+  # JOB 1: BACKEND QUALITY CHECK
+  # ===========================================================================
+  backend-quality:
+    name: Backend Quality & Security
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: src/backend
+
+    steps:
+      # =========================================================================
+      # BƯỚC 1: Checkout code với full history (bắt buộc cho SonarQube)
+      # =========================================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # SonarQube cần full history
+
+      # =========================================================================
+      # BƯỚC 2: Cài đặt Java 21 (Temurin) + Maven Caching
+      # =========================================================================
+      - name: Setup Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+          cache-dependency-path: 'src/backend/pom.xml'
+
+      # =========================================================================
+      # BƯỚC 3: Kiểm tra Code Style với Checkstyle
+      # =========================================================================
+      - name: Run Checkstyle
+        run: mvn checkstyle:checkstyle --batch-mode --no-transfer-progress
+
+      # =========================================================================
+      # BƯỚC 4: Chạy Unit Tests
+      # =========================================================================
+      - name: Run Unit Tests
+        run: mvn test --batch-mode --no-transfer-progress
+
+      # =========================================================================
+      # BƯỚC 5: Cache SonarQube packages
+      # =========================================================================
+      - name: Cache SonarQube Packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-sonar-
+
+      # =========================================================================
+      # BƯỚC 6: SonarQube Scan (Community Edition)
+      # =========================================================================
+      - name: SonarQube Scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          mvn sonar:sonar \
+            --batch-mode \
+            --no-transfer-progress \
+            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
+            -Dsonar.token=${{ secrets.SONAR_TOKEN }} \
+            -Dsonar.projectKey=${{ github.repository_owner }}_${{ github.event.repository.name }}_backend \
+            -Dsonar.projectName=${{ github.event.repository.name }}-backend
+
+      # =========================================================================
+      # BƯỚC 7: Quality Gate Check - BẮT BUỘC PASS
+      # =========================================================================
+      - name: SonarQube Quality Gate Check
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        with:
+          # Maven tạo report trong src/backend/target/sonar/
+          # Quality Gate action chạy từ root workspace nên cần full path
+          scanMetadataReportFile: src/backend/target/sonar/report-task.txt
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  # ===========================================================================
+  # JOB 2: FRONTEND QUALITY CHECK
+  # ===========================================================================
+  frontend-quality:
+    name: Frontend Quality & Build Test
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: src/frontend
+
+    steps:
+      # =========================================================================
+      # BƯỚC 1: Checkout code với full history (bắt buộc cho SonarQube)
+      # =========================================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # SonarQube cần full history
+
+      # =========================================================================
+      # BƯỚC 2: Setup Node.js 20 + NPM Caching
+      # =========================================================================
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'src/frontend/package-lock.json'
+
+      # =========================================================================
+      # BƯỚC 3: Cài đặt dependencies
+      # =========================================================================
+      - name: Install Dependencies
+        run: npm ci
+        # npm ci: Clean install - nhanh hơn npm install, phù hợp cho CI
+
+      # =========================================================================
+      # BƯỚC 4: Run Linter (ESLint)
+      # =========================================================================
+      - name: Run ESLint
+        run: npm run lint -- --max-warnings=10
+        # --max-warnings: Cho phép tối đa 10 warnings, fail nếu vượt quá
+        # Khuyến khích fix warnings nhưng không block pipeline hoàn toàn
+
+      # =========================================================================
+      # BƯỚC 5: Build frontend (test build có thành công không)
+      # =========================================================================
+      - name: Build Frontend
+        run: npm run build
+        # Đảm bảo code build được không lỗi
+
+      # =========================================================================
+      # BƯỚC 6: Run Tests (nếu có)
+      # =========================================================================
+      - name: Run Tests
+        run: npm test --if-present
+
+      # =========================================================================
+      # BƯỚC 7: Cache SonarQube packages
+      # =========================================================================
+      - name: Cache SonarQube Packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar-frontend-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-sonar-frontend-
+
+      # =========================================================================
+      # BƯỚC 8: SonarQube Scan for Frontend (Community Edition)
+      # =========================================================================
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          projectBaseDir: src/frontend
+          args: >
+            -Dsonar.projectKey=${{ github.repository_owner }}_${{ github.event.repository.name }}_frontend
+            -Dsonar.projectName=${{ github.event.repository.name }}-frontend
+            -Dsonar.sources=src
+            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/build/**
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+
+      # =========================================================================
+      # Debug: Check report file location (Frontend)
+      # =========================================================================
+      - name: Check SonarQube Report Location (Frontend)
+        run: |
+          echo "Checking frontend report file location..."
+          find . -name "report-task.txt" -type f 2>/dev/null || echo "report-task.txt not found"
+          ls -la .scannerwork/ 2>/dev/null || echo ".scannerwork not found in src/frontend"
+
+      # =========================================================================
+      # BƯỚC 9: Quality Gate Check - BẮT BUỘC PASS
+      # =========================================================================
+      - name: SonarQube Quality Gate Check
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        with:
+          scanMetadataReportFile: src/frontend/.scannerwork/report-task.txt
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
