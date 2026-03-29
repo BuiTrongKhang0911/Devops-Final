@@ -1,0 +1,147 @@
+# =============================================================================
+# KUBERNETES ROLE - Cài đặt kubeadm, kubelet, kubectl và khởi tạo cluster
+# =============================================================================
+
+---
+- name: Tạo thư mục keyrings
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Thêm Kubernetes GPG key
+  get_url:
+    url: https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key
+    dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+    mode: '0644'
+
+- name: Thêm Kubernetes repository
+  apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/ /"
+    state: present
+    filename: kubernetes
+
+- name: Cài đặt kubeadm, kubelet, kubectl
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    update_cache: yes
+
+- name: Giữ phiên bản Kubernetes packages (prevent auto-upgrade)
+  dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Đảm bảo kubelet đang chạy
+  systemd:
+    name: kubelet
+    state: started
+    enabled: yes
+
+- name: Kiểm tra cluster đã được khởi tạo chưa
+  stat:
+    path: /etc/kubernetes/admin.conf
+  register: k8s_initialized
+
+- name: Khởi tạo Kubernetes cluster với kubeadm
+  command: >
+    kubeadm init 
+    --pod-network-cidr={{ pod_network_cidr }}
+    --apiserver-advertise-address={{ ansible_default_ipv4.address }}
+  when: not k8s_initialized.stat.exists
+  register: kubeadm_init
+
+- name: Tạo thư mục .kube cho user ubuntu
+  file:
+    path: /home/ubuntu/.kube
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+
+- name: Copy admin.conf cho user ubuntu
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/ubuntu/.kube/config
+    remote_src: yes
+    owner: ubuntu
+    group: ubuntu
+    mode: '0600'
+
+- name: Tạo thư mục .kube cho root
+  file:
+    path: /root/.kube
+    state: directory
+    mode: '0755'
+
+- name: Copy admin.conf cho root
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    remote_src: yes
+    mode: '0600'
+
+- name: Cài đặt Calico CNI plugin
+  become_user: ubuntu
+  command: kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml
+  when: kubeadm_init.changed or not k8s_initialized.stat.exists
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+
+- name: Cho phép schedule pods trên master node (single-node cluster)
+  become_user: ubuntu
+  command: kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+  ignore_errors: yes
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+
+- name: Đợi các node Ready
+  become_user: ubuntu
+  command: kubectl wait --for=condition=Ready nodes --all --timeout=300s
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  retries: 5
+  delay: 30
+  register: nodes_ready
+  until: nodes_ready.rc == 0
+
+- name: Đợi CoreDNS pods Ready
+  become_user: ubuntu
+  command: kubectl wait --for=condition=Ready pods -l k8s-app=kube-dns -n kube-system --timeout=300s
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  retries: 5
+  delay: 30
+  register: coredns_ready
+  until: coredns_ready.rc == 0
+
+- name: Kiểm tra trạng thái cluster
+  become_user: ubuntu
+  command: kubectl get nodes -o wide
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  register: kubectl_nodes
+  changed_when: false
+
+- name: Hiển thị nodes
+  debug:
+    var: kubectl_nodes.stdout_lines
+
+- name: Kiểm tra pods trong kube-system
+  become_user: ubuntu
+  command: kubectl get pods -n kube-system
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  register: kubectl_pods
+  changed_when: false
+
+- name: Hiển thị system pods
+  debug:
+    var: kubectl_pods.stdout_lines
