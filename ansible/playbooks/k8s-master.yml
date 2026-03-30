@@ -20,6 +20,7 @@
     - common
     - containerd
     - kubernetes
+    - ingress-nginx
 
   post_tasks:
     - name: Hiển thị thông tin cluster
