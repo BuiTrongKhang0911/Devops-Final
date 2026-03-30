@@ -78,6 +78,8 @@ jobs:
       # =========================================================================
       - name: Copy Manifests to K8s Server
         run: |
+          # Xóa folder cũ trước khi copy mới
+          ssh -i ~/.ssh/k8s_key ubuntu@${{ secrets.K8S_HOST }} "rm -rf ~/kubernetes"
           scp -i ~/.ssh/k8s_key -r kubernetes/ ubuntu@${{ secrets.K8S_HOST }}:~/
 
       # =========================================================================
