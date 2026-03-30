@@ -12,6 +12,9 @@ RUN npm run build
 # Production stage
 FROM nginx:alpine
 
+# Update Alpine packages to fix CVEs (zlib, etc.)
+RUN apk upgrade --no-cache
+
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Copy nginx config
