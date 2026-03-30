@@ -17,6 +17,9 @@ FROM eclipse-temurin:21-jre-alpine
 
 WORKDIR /app
 
+# Update Alpine packages to fix CVEs (libexpat, zlib, etc.)
+RUN apk upgrade --no-cache
+
 # Create uploads directory
 RUN mkdir -p /app/uploads
 

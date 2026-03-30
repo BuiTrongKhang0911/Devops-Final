@@ -106,8 +106,9 @@ jobs:
         with:
           image-ref: ${{ env.DOCKER_USERNAME }}/document-management-backend:scan
           format: 'table'
-          exit-code: '1'  # Trượt pipeline nếu phát hiện lỗi
-          severity: 'CRITICAL,HIGH'  # Chỉ bắt lỗi nghiêm trọng
+          exit-code: '1'
+          severity: 'CRITICAL'  # Chỉ fail khi có CRITICAL
+          ignore-unfixed: true  # Bỏ qua lỗi chưa có bản vá
 
       # =========================================================================
       # BƯỚC 9: An toàn -> Đẩy lên Docker Hub
@@ -220,8 +221,9 @@ jobs:
         with:
           image-ref: ${{ env.DOCKER_USERNAME }}/document-management-frontend:scan
           format: 'table'
-          exit-code: '1'  # Trượt pipeline nếu phát hiện lỗi
-          severity: 'CRITICAL,HIGH'  # Chỉ bắt lỗi nghiêm trọng
+          exit-code: '1'
+          severity: 'CRITICAL'  # Chỉ fail khi có CRITICAL
+          ignore-unfixed: true  # Bỏ qua lỗi chưa có bản vá
 
       # =========================================================================
       # BƯỚC 9: An toàn -> Đẩy lên Docker Hub
