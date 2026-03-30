@@ -1,0 +1,42 @@
+# =============================================================================
+# INGRESS.YAML - Route traffic từ internet vào services
+# =============================================================================
+# Cần cài Nginx Ingress Controller trước khi apply file này
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-ingress
+  namespace: devops-final
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # HTTPS annotations (bật sau khi có cert-manager)
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  # TLS - Bật sau khi có domain và cert-manager
+  # tls:
+  #   - hosts:
+  #       - your-domain.com
+  #     secretName: app-tls-secret
+  rules:
+    # Rule cho IP hoặc domain
+    - http:
+        paths:
+          # Frontend - root path
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-svc
+                port:
+                  number: 80
+          # Backend API - /api path
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-svc
+                port:
+                  number: 8080

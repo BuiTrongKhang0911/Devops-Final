@@ -1,0 +1,9 @@
+# =============================================================================
+# NAMESPACE.YAML - Tạo namespace riêng cho project
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: devops-final
+  labels:
+    app.kubernetes.io/name: devops-final

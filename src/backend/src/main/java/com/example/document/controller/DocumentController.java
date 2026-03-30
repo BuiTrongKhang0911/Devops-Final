@@ -44,6 +44,7 @@ public class DocumentController {
     // GET /api/documents - List all documents
     @GetMapping
     public ResponseEntity<List<DocumentDTO>> getAllDocuments() {
+        // v1.0.1 - CI/CD test
         List<DocumentDTO> documents = documentService.getAllDocuments();
         return ResponseEntity.ok(documents);
     }

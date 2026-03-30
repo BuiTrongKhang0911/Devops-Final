@@ -1,8 +1,12 @@
 # =============================================================================
 # MAIN-CI.YML - Build & Release Docker Images
 # =============================================================================
-# Mục đích: Đóng gói Backend + Frontend và đẩy Docker images lên Docker Hub
+# Mục đích: 
+#   1. Đóng gói Backend + Frontend thành Docker images
+#   2. Quét bảo mật với Trivy
+#   3. Đẩy images lên Docker Hub
 # Trigger: Khi code được merge/push vào nhánh main
+# CD Pipeline: deploy-cd.yml sẽ tự động chạy sau khi CI thành công
 # =============================================================================
 
 name: Build & Release Docker
@@ -82,9 +86,33 @@ jobs:
             type=sha,format=short
 
       # =========================================================================
-      # BƯỚC 7: Build và Push Backend Docker Image
+      # BƯỚC 7: Build và Load vào Docker Local (CHƯA PUSH)
       # =========================================================================
-      - name: Build and Push Backend Image
+      - name: Build and Load Backend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/backend
+          load: true  # Giữ lại máy ảo để Trivy quét
+          tags: ${{ env.DOCKER_USERNAME }}/document-management-backend:scan
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # BƯỚC 8: Quét lỗ hổng Container bằng Trivy
+      # =========================================================================
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_USERNAME }}/document-management-backend:scan
+          format: 'table'
+          exit-code: '1'  # Trượt pipeline nếu phát hiện lỗi
+          severity: 'CRITICAL,HIGH'  # Chỉ bắt lỗi nghiêm trọng
+
+      # =========================================================================
+      # BƯỚC 9: An toàn -> Đẩy lên Docker Hub
+      # =========================================================================
+      - name: Push Backend Image to Docker Hub
         uses: docker/build-push-action@v6
         with:
           context: src/backend
@@ -92,20 +120,20 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       # =========================================================================
-      # BƯỚC 8: Output thông tin Backend image
+      # BƯỚC 10: Output thông tin Backend image
       # =========================================================================
       - name: Print Backend Image Info
         run: |
           echo "============================================="
-          echo "Backend Docker Image Published!"
+          echo "✅ Backend Docker Image Published!"
           echo "============================================="
           echo "Image: ${{ env.DOCKER_USERNAME }}/document-management-backend"
           echo "Tags:"
           echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/   - /'
           echo "Commit: ${{ github.sha }}"
+          echo "Security: Trivy scan PASSED"
           echo "============================================="
 
   # ===========================================================================
@@ -172,9 +200,33 @@ jobs:
             type=sha,format=short
 
       # =========================================================================
-      # BƯỚC 7: Build và Push Frontend Docker Image
+      # BƯỚC 7: Build và Load vào Docker Local (CHƯA PUSH)
       # =========================================================================
-      - name: Build and Push Frontend Image
+      - name: Build and Load Frontend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/frontend
+          load: true  # Giữ lại máy ảo để Trivy quét
+          tags: ${{ env.DOCKER_USERNAME }}/document-management-frontend:scan
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # BƯỚC 8: Quét lỗ hổng Container bằng Trivy
+      # =========================================================================
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_USERNAME }}/document-management-frontend:scan
+          format: 'table'
+          exit-code: '1'  # Trượt pipeline nếu phát hiện lỗi
+          severity: 'CRITICAL,HIGH'  # Chỉ bắt lỗi nghiêm trọng
+
+      # =========================================================================
+      # BƯỚC 9: An toàn -> Đẩy lên Docker Hub
+      # =========================================================================
+      - name: Push Frontend Image to Docker Hub
         uses: docker/build-push-action@v6
         with:
           context: src/frontend
@@ -182,18 +234,18 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       # =========================================================================
-      # BƯỚC 8: Output thông tin Frontend image
+      # BƯỚC 10: Output thông tin Frontend image
       # =========================================================================
       - name: Print Frontend Image Info
         run: |
           echo "============================================="
-          echo "Frontend Docker Image Published!"
+          echo "✅ Frontend Docker Image Published!"
           echo "============================================="
           echo "Image: ${{ env.DOCKER_USERNAME }}/document-management-frontend"
           echo "Tags:"
           echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/   - /'
           echo "Commit: ${{ github.sha }}"
+          echo "Security: Trivy scan PASSED"
           echo "============================================="
