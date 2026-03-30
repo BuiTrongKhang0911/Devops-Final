@@ -1,0 +1,17 @@
+# =============================================================================
+# POSTGRES PVC - Persistent storage cho database
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: devops-final
+  labels:
+    app: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # storageClassName mặc định sẽ sử dụng storage class của cluster

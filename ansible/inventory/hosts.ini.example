@@ -1,0 +1,26 @@
+# =============================================================================
+# ANSIBLE INVENTORY TEMPLATE
+# =============================================================================
+# File hosts.ini sẽ được tự động tạo bởi setup.sh/setup.ps1
+# KHÔNG commit hosts.ini vào git (nó chứa IP động)
+# =============================================================================
+# Nếu muốn chạy thủ công:
+# 1. Copy file này thành hosts.ini
+# 2. Thay các placeholder bằng giá trị thật
+# =============================================================================
+
+[k8s_master]
+k8s-master ansible_host=<K8S_IP> ansible_user=ubuntu ansible_ssh_private_key_file=../<YOUR_KEY>.pem
+
+[k8s_master:vars]
+ansible_python_interpreter=/usr/bin/python3
+k8s_master_private_ip=<K8S_PRIVATE_IP>
+
+[sonarqube]
+sonarqube ansible_host=<SONARQUBE_IP> ansible_user=ubuntu ansible_ssh_private_key_file=../<YOUR_KEY>.pem
+
+[sonarqube:vars]
+ansible_python_interpreter=/usr/bin/python3
+
+[all:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'

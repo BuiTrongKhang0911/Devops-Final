@@ -32,21 +32,27 @@
     path: /etc/containerd
     state: directory
 
+- name: Xóa config cũ của containerd (nếu có)
+  file:
+    path: /etc/containerd/config.toml
+    state: absent
+
 - name: Tạo config mặc định cho containerd
   shell: containerd config default > /etc/containerd/config.toml
-  args:
-    creates: /etc/containerd/config.toml
 
 - name: Cấu hình SystemdCgroup = true (bắt buộc cho K8s)
   replace:
     path: /etc/containerd/config.toml
     regexp: 'SystemdCgroup = false'
     replace: 'SystemdCgroup = true'
-  notify: Restart containerd
 
-- name: Đảm bảo containerd đang chạy
+- name: Restart containerd ngay lập tức
   systemd:
     name: containerd
-    state: started
+    state: restarted
     enabled: yes
     daemon_reload: yes
+
+- name: Đợi containerd sẵn sàng
+  pause:
+    seconds: 5

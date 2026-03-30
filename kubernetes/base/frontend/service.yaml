@@ -1,0 +1,18 @@
+# =============================================================================
+# FRONTEND SERVICE - Internal access cho frontend
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-svc
+  namespace: devops-final
+  labels:
+    app: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP

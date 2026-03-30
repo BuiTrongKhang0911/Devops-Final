@@ -1,0 +1,17 @@
+# =============================================================================
+# CONFIGMAP.YAML - Environment variables (non-sensitive)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: devops-final
+data:
+  # Database
+  POSTGRES_DB: "docdb"
+  POSTGRES_USER: "docuser"
+  
+  # Spring Boot
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres-svc:5432/docdb"
+  SPRING_DATASOURCE_USERNAME: "docuser"
+  APP_UPLOAD_DIR: "/app/uploads"
