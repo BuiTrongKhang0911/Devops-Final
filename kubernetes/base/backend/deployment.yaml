@@ -59,18 +59,6 @@ spec:
             periodSeconds: 15
       volumes:
         - name: uploads
-          persistentVolumeClaim:
-            claimName: uploads-pvc
----
-# PVC cho uploads
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: uploads-pvc
-  namespace: devops-final
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 2Gi
+          hostPath:
+            path: /data/uploads
+            type: DirectoryOrCreate
