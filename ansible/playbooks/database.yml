@@ -1,0 +1,109 @@
+# =============================================================================
+# DATABASE.YML - Cài đặt PostgreSQL trên DB+NFS Server
+# =============================================================================
+# Chạy: ansible-playbook -i inventory/hosts.ini playbooks/database.yml
+# =============================================================================
+
+---
+- name: Setup PostgreSQL Database Server
+  hosts: database
+  become: yes
+  gather_facts: yes
+
+  vars:
+    postgres_version: "16"
+    db_name: "document_db"
+    db_user: "docuser"
+    db_password: "SecurePassword123!"  # ⚠️ Nên dùng Ansible Vault trong production thật
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - postgresql-{{ postgres_version }}
+          - postgresql-contrib-{{ postgres_version }}
+          - python3-psycopg2
+        state: present
+
+    - name: Ensure PostgreSQL is running
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Create application database
+      become_user: postgres
+      postgresql_db:
+        name: "{{ db_name }}"
+        state: present
+
+    - name: Create application user
+      become_user: postgres
+      postgresql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_password }}"
+        db: "{{ db_name }}"
+        priv: ALL
+        state: present
+
+    - name: Grant all privileges to user
+      become_user: postgres
+      postgresql_privs:
+        database: "{{ db_name }}"
+        roles: "{{ db_user }}"
+        type: database
+        privs: ALL
+
+    - name: Configure PostgreSQL to listen on all interfaces
+      lineinfile:
+        path: /etc/postgresql/{{ postgres_version }}/main/postgresql.conf
+        regexp: '^#?listen_addresses'
+        line: "listen_addresses = '*'"
+        state: present
+      notify: restart postgresql
+
+    - name: Configure pg_hba.conf to allow VPC connections
+      blockinfile:
+        path: /etc/postgresql/{{ postgres_version }}/main/pg_hba.conf
+        block: |
+          # Allow connections from VPC CIDR
+          host    all             all             10.0.0.0/16             md5
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - VPC ACCESS"
+      notify: restart postgresql
+
+    - name: Ensure PostgreSQL is restarted if config changed
+      meta: flush_handlers
+
+    - name: Test database connection
+      become_user: postgres
+      postgresql_query:
+        db: "{{ db_name }}"
+        query: SELECT version();
+      register: db_version
+
+    - name: Display database info
+      debug:
+        msg: |
+          ============================================
+          💾 POSTGRESQL DATABASE READY!
+          ============================================
+          Version: {{ db_version.query_result[0].version }}
+          Database: {{ db_name }}
+          User: {{ db_user }}
+          Listen: 0.0.0.0:5432
+          Private IP: {{ ansible_default_ipv4.address }}
+          
+          Connection string:
+          postgresql://{{ db_user }}:{{ db_password }}@{{ ansible_default_ipv4.address }}:5432/{{ db_name }}
+          ============================================
+
+  handlers:
+    - name: restart postgresql
+      systemd:
+        name: postgresql
+        state: restarted

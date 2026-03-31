@@ -1,26 +1,25 @@
 # =============================================================================
-# ANSIBLE INVENTORY TEMPLATE
+# ANSIBLE INVENTORY - Template
 # =============================================================================
-# File hosts.ini sẽ được tự động tạo bởi setup.sh/setup.ps1
-# KHÔNG commit hosts.ini vào git (nó chứa IP động)
+# Copy file này thành hosts.ini và điền IP từ Terraform outputs:
+# cp hosts.ini.example hosts.ini
+# 
+# Lấy IP từ: terraform output -json
 # =============================================================================
-# Nếu muốn chạy thủ công:
-# 1. Copy file này thành hosts.ini
-# 2. Thay các placeholder bằng giá trị thật
-# =============================================================================
-
-[k8s_master]
-k8s-master ansible_host=<K8S_IP> ansible_user=ubuntu ansible_ssh_private_key_file=../<YOUR_KEY>.pem
-
-[k8s_master:vars]
-ansible_python_interpreter=/usr/bin/python3
-k8s_master_private_ip=<K8S_PRIVATE_IP>
 
 [sonarqube]
-sonarqube ansible_host=<SONARQUBE_IP> ansible_user=ubuntu ansible_ssh_private_key_file=../<YOUR_KEY>.pem
+sonarqube ansible_host=SONARQUBE_PUBLIC_IP ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
 
-[sonarqube:vars]
-ansible_python_interpreter=/usr/bin/python3
+[database]
+db-nfs ansible_host=DB_NFS_PUBLIC_IP ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
+
+[nfs_server]
+db-nfs ansible_host=DB_NFS_PUBLIC_IP ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
 
 [all:vars]
-ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+
+# =============================================================================
+# VARIABLES - Điền sau khi Terraform deploy
+# =============================================================================
+# NFS_SERVER_PRIVATE_IP=DB_NFS_PRIVATE_IP  # Dùng cho K8s PersistentVolume

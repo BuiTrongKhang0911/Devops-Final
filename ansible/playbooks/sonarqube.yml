@@ -1,0 +1,105 @@
+# =============================================================================
+# SONARQUBE.YML - Cài đặt SonarQube Server
+# =============================================================================
+# Chạy: ansible-playbook -i inventory/hosts.ini playbooks/sonarqube.yml
+# =============================================================================
+
+---
+- name: Setup SonarQube Server
+  hosts: sonarqube
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Upgrade all packages
+      apt:
+        upgrade: dist
+        autoremove: yes
+
+    - name: Install required packages
+      apt:
+        name:
+          - docker.io
+          - python3-docker
+        state: present
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add ubuntu user to docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+    - name: Configure kernel parameters for Elasticsearch
+      sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+      loop:
+        - { key: 'vm.max_map_count', value: '524288' }
+        - { key: 'fs.file-max', value: '131072' }
+
+    - name: Set ulimits for SonarQube
+      pam_limits:
+        domain: '*'
+        limit_type: '-'
+        limit_item: "{{ item.item }}"
+        value: "{{ item.value }}"
+      loop:
+        - { item: 'nofile', value: '131072' }
+        - { item: 'nproc', value: '8192' }
+
+    - name: Create Docker volumes for SonarQube
+      docker_volume:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - sonarqube_data
+        - sonarqube_logs
+        - sonarqube_extensions
+
+    - name: Run SonarQube container
+      docker_container:
+        name: sonarqube
+        image: sonarqube:community
+        state: started
+        restart_policy: always
+        ports:
+          - "9000:9000"
+        volumes:
+          - sonarqube_data:/opt/sonarqube/data
+          - sonarqube_logs:/opt/sonarqube/logs
+          - sonarqube_extensions:/opt/sonarqube/extensions
+
+    - name: Wait for SonarQube to be ready
+      uri:
+        url: "http://localhost:9000/api/system/status"
+        method: GET
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 30
+      delay: 10
+
+    - name: Display SonarQube info
+      debug:
+        msg: |
+          ============================================
+          🔍 SONARQUBE SERVER READY!
+          ============================================
+          URL: http://{{ ansible_host }}:9000
+          Default credentials: admin / admin
+          
+          ⚠️  Change password on first login!
+          ============================================
