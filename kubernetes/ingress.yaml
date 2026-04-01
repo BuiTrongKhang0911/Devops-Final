@@ -1,7 +1,7 @@
 # =============================================================================
 # INGRESS.YAML - Route traffic từ internet vào services
 # =============================================================================
-# Cần cài Nginx Ingress Controller trước khi apply file này
+# Sử dụng AWS Load Balancer Controller (tự động cài trên EKS)
 # =============================================================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -9,12 +9,16 @@ metadata:
   name: app-ingress
   namespace: devops-final
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-    # HTTPS annotations (bật sau khi có cert-manager)
-    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
 spec:
-  ingressClassName: nginx
+  ingressClassName: alb
   # TLS - Bật sau khi có domain và cert-manager
   # tls:
   #   - hosts:

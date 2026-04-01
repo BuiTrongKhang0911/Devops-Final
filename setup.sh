@@ -309,20 +309,18 @@ cat << EOF
 
 📋 GITHUB ACTIONS SECRETS (cần thêm vào repo):
    
-   Xem hướng dẫn chi tiết trong README.md
-   
-   Các secrets cần thiết:
-   - AWS_ACCESS_KEY_ID
-   - AWS_SECRET_ACCESS_KEY  
-   - AWS_REGION: ${AWS_REGION}
+   Các secrets BẮT BUỘC:
+   - AWS_ACCESS_KEY_ID: <your-aws-access-key>
+   - AWS_SECRET_ACCESS_KEY: <your-aws-secret-key>
    - EKS_CLUSTER_NAME: ${EKS_CLUSTER_NAME}
+   - DATA_SERVER_IP: ${DB_NFS_PRIVATE_IP}
    - SONAR_HOST_URL: http://${SONARQUBE_PUBLIC_IP}:9000
    - SONAR_TOKEN: <generate từ SonarQube UI>
-   - DOCKER_USERNAME: <your dockerhub username>
-   - DOCKER_PASSWORD: <your dockerhub password>
+   - DOCKER_USERNAME: <your-dockerhub-username>
+   - DOCKER_PASSWORD: <your-dockerhub-password>
    - DB_PASSWORD: SecurePassword123!
-   - DB_HOST: ${DB_NFS_PRIVATE_IP}
-   - NFS_SERVER_IP: ${DB_NFS_PRIVATE_IP}
+   
+   💡 AWS credentials dùng để GitHub Actions kết nối EKS cluster
 
 📝 NEXT STEPS:
    1. Truy cập SonarQube và đổi password

@@ -7,11 +7,16 @@ metadata:
   name: app-config
   namespace: devops-final
 data:
-  # Database
-  POSTGRES_DB: "docdb"
+  # External Database (EC2 standalone)
+  POSTGRES_DB: "document_db"
   POSTGRES_USER: "docuser"
+  DB_HOST: "PLACEHOLDER_DB_HOST"  # Sẽ được thay thế bởi CI/CD với DATA_SERVER_IP
   
-  # Spring Boot
-  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres-svc:5432/docdb"
+  # Spring Boot - Connect to external PostgreSQL
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://PLACEHOLDER_DB_HOST:5432/document_db"
   SPRING_DATASOURCE_USERNAME: "docuser"
   APP_UPLOAD_DIR: "/app/uploads"
+  
+  # NFS Server
+  NFS_SERVER: "PLACEHOLDER_NFS_SERVER"  # Sẽ được thay thế bởi CI/CD với DATA_SERVER_IP
+

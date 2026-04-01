@@ -26,7 +26,7 @@ spec:
       containers:
         - name: frontend
           # Image sẽ được update bởi CI/CD với tag cụ thể
-          image: DOCKER_USERNAME/document-management-frontend:latest
+          image: DOCKER_USERNAME/document-management-frontend:PLACEHOLDER_IMAGE_TAG
           imagePullPolicy: Always
           ports:
             - containerPort: 80

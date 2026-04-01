@@ -1,7 +1,7 @@
 # =============================================================================
-# DEPLOY-CD.YML - Continuous Deployment Pipeline
+# DEPLOY-CD.YML - Continuous Deployment Pipeline for EKS
 # =============================================================================
-# Mục đích: Deploy ứng dụng lên Kubernetes cluster
+# Mục đích: Deploy ứng dụng lên Amazon EKS cluster
 # Trigger: Tự động chạy khi "Build & Release Docker" thành công
 # =============================================================================
 
@@ -16,13 +16,14 @@ on:
 
 env:
   DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  AWS_REGION: ap-southeast-1
 
 jobs:
   # ===========================================================================
-  # JOB: DEPLOY TO KUBERNETES
+  # JOB: DEPLOY TO EKS
   # ===========================================================================
   deploy:
-    name: Deploy to Kubernetes
+    name: Deploy to Amazon EKS
     runs-on: ubuntu-latest
     # Chỉ chạy nếu CI workflow thành công
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
@@ -37,19 +38,28 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       # =========================================================================
-      # BƯỚC 2: Setup SSH key
+      # BƯỚC 2: Configure AWS Credentials
       # =========================================================================
-      - name: Setup SSH Key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.K8S_SSH_KEY }}" > ~/.ssh/k8s_key
-          chmod 600 ~/.ssh/k8s_key
-          ssh-keyscan -H ${{ secrets.K8S_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
       # =========================================================================
-      # BƯỚC 3: Update image tags và secrets trong manifests
+      # BƯỚC 3: Configure kubectl for EKS
       # =========================================================================
-      - name: Update Image Tags and Secrets
+      - name: Configure kubectl for EKS
+        run: |
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          kubectl version --client
+          kubectl cluster-info
+
+      # =========================================================================
+      # BƯỚC 4: Update image tags, DB host, NFS server, và secrets
+      # =========================================================================
+      - name: Update Image Tags and Configuration
         run: |
           # Lấy SHA từ workflow_run event
           COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
@@ -58,85 +68,93 @@ jobs:
           echo "📦 Deploying commit: $COMMIT_SHA"
           echo "📦 Short SHA: $SHORT_SHA"
           
-          # Update backend image
-          sed -i "s|DOCKER_USERNAME/document-management-backend:latest|${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${SHORT_SHA}|g" \
+          # Update backend image - thay thế PLACEHOLDER_IMAGE_TAG
+          sed -i "s|DOCKER_USERNAME/document-management-backend:PLACEHOLDER_IMAGE_TAG|${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${SHORT_SHA}|g" \
             kubernetes/base/backend/deployment.yaml
           
-          # Update frontend image
-          sed -i "s|DOCKER_USERNAME/document-management-frontend:latest|${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${SHORT_SHA}|g" \
+          # Update frontend image - thay thế PLACEHOLDER_IMAGE_TAG
+          sed -i "s|DOCKER_USERNAME/document-management-frontend:PLACEHOLDER_IMAGE_TAG|${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${SHORT_SHA}|g" \
             kubernetes/base/frontend/deployment.yaml
           
-          # Update secrets (lấy từ GitHub Secrets)
+          # Update ConfigMap với DATA_SERVER_IP (cho cả DB và NFS)
+          sed -i "s|PLACEHOLDER_DB_HOST|${{ secrets.DATA_SERVER_IP }}|g" \
+            kubernetes/configmap.yaml
+          sed -i "s|PLACEHOLDER_NFS_SERVER|${{ secrets.DATA_SERVER_IP }}|g" \
+            kubernetes/configmap.yaml
+          
+          # Update NFS PersistentVolume
+          sed -i "s|PLACEHOLDER_NFS_SERVER|${{ secrets.DATA_SERVER_IP }}|g" \
+            kubernetes/nfs-pv.yaml
+          
+          # Update secrets
           sed -i "s|PLACEHOLDER_DB_PASSWORD|${{ secrets.DB_PASSWORD }}|g" \
             kubernetes/secrets.yaml
           
           echo "✅ Updated images to tag: sha-${SHORT_SHA}"
+          echo "✅ Updated DB host: ${{ secrets.DATA_SERVER_IP }}"
+          echo "✅ Updated NFS server: ${{ secrets.DATA_SERVER_IP }}"
           echo "✅ Updated secrets from GitHub Secrets"
 
       # =========================================================================
-      # BƯỚC 4: Copy manifests lên K8s server
+      # BƯỚC 5: Deploy to EKS
       # =========================================================================
-      - name: Copy Manifests to K8s Server
+      - name: Deploy to EKS
         run: |
-          # Xóa folder cũ trước khi copy mới
-          ssh -i ~/.ssh/k8s_key ubuntu@${{ secrets.K8S_HOST }} "rm -rf ~/kubernetes"
-          scp -i ~/.ssh/k8s_key -r kubernetes/ ubuntu@${{ secrets.K8S_HOST }}:~/
+          set -e
+          
+          echo "🚀 Starting EKS Deployment..."
+          
+          # Apply namespace first
+          kubectl apply -f kubernetes/namespace.yaml
+          
+          # Apply configs and secrets
+          kubectl apply -f kubernetes/configmap.yaml
+          kubectl apply -f kubernetes/secrets.yaml
+          
+          # Apply NFS PersistentVolume and PVC
+          kubectl apply -f kubernetes/nfs-pv.yaml
+          
+          # Wait for PVC to be bound
+          echo "⏳ Waiting for NFS PVC to be bound..."
+          kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/nfs-uploads-pvc -n devops-final --timeout=60s || true
+          
+          # Apply backend
+          kubectl apply -f kubernetes/base/backend/
+          
+          # Apply frontend
+          kubectl apply -f kubernetes/base/frontend/
+          
+          # Apply ingress
+          kubectl apply -f kubernetes/ingress.yaml
+          
+          # Force rollout để pull image mới
+          kubectl rollout restart deployment/backend -n devops-final
+          kubectl rollout restart deployment/frontend -n devops-final
+          
+          # Wait for rollout
+          echo "⏳ Waiting for rollout to complete..."
+          kubectl rollout status deployment/backend -n devops-final --timeout=180s
+          kubectl rollout status deployment/frontend -n devops-final --timeout=180s
+          
+          echo "✅ Deployment completed successfully!"
 
       # =========================================================================
-      # BƯỚC 5: Deploy to Kubernetes
+      # BƯỚC 6: Verify Deployment
       # =========================================================================
-      - name: Deploy to Kubernetes
+      - name: Verify Deployment
         run: |
-          ssh -i ~/.ssh/k8s_key ubuntu@${{ secrets.K8S_HOST }} << 'EOF'
-            set -e
-            
-            echo "🚀 Starting Kubernetes Deployment..."
-            
-            # Apply namespace first
-            kubectl apply -f kubernetes/namespace.yaml
-            
-            # Apply configs and secrets
-            kubectl apply -f kubernetes/configmap.yaml
-            kubectl apply -f kubernetes/secrets.yaml
-            
-            # Apply database (postgres)
-            kubectl apply -f kubernetes/base/postgres/
-            
-            # Wait for postgres to be ready
-            echo "⏳ Waiting for PostgreSQL to be ready..."
-            kubectl wait --for=condition=ready pod -l app=postgres -n devops-final --timeout=120s || true
-            
-            # Apply backend
-            kubectl apply -f kubernetes/base/backend/
-            
-            # Apply frontend
-            kubectl apply -f kubernetes/base/frontend/
-            
-            # Apply ingress
-            kubectl apply -f kubernetes/ingress.yaml
-            
-            # Force rollout để pull image mới
-            kubectl rollout restart deployment/backend -n devops-final
-            kubectl rollout restart deployment/frontend -n devops-final
-            
-            # Wait for rollout
-            echo "⏳ Waiting for rollout to complete..."
-            kubectl rollout status deployment/backend -n devops-final --timeout=180s
-            kubectl rollout status deployment/frontend -n devops-final --timeout=180s
-            
-            echo "✅ Deployment completed successfully!"
-            
-            # Show status
-            echo ""
-            echo "📊 Current Pod Status:"
-            kubectl get pods -n devops-final
-            echo ""
-            echo "📊 Current Services:"
-            kubectl get svc -n devops-final
-          EOF
+          echo ""
+          echo "📊 Current Pod Status:"
+          kubectl get pods -n devops-final -o wide
+          echo ""
+          echo "📊 Current Services:"
+          kubectl get svc -n devops-final
+          echo ""
+          echo "📊 Current Ingress:"
+          kubectl get ingress -n devops-final
 
       # =========================================================================
-      # BƯỚC 6: Print Deployment Summary
+      # BƯỚC 7: Print Deployment Summary
       # =========================================================================
       - name: Print Deployment Summary
         run: |
@@ -148,8 +166,10 @@ jobs:
           echo "Commit: $COMMIT_SHA"
           echo "Backend Image: ${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${SHORT_SHA}"
           echo "Frontend Image: ${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${SHORT_SHA}"
-          echo "K8s Server: ${{ secrets.K8S_HOST }}"
+          echo "EKS Cluster: ${{ secrets.EKS_CLUSTER_NAME }}"
+          echo "Region: ${{ env.AWS_REGION }}"
           echo "Namespace: devops-final"
+          echo "Data Server: ${{ secrets.DATA_SERVER_IP }}"
           echo "============================================="
 
   # ===========================================================================
