@@ -1,5 +1,5 @@
 # =============================================================================
-# FRONTEND SERVICE - Internal access cho frontend
+# FRONTEND SERVICE - Expose frontend pods
 # =============================================================================
 apiVersion: v1
 kind: Service
@@ -13,6 +13,7 @@ spec:
   selector:
     app: frontend
   ports:
-    - port: 80
-      targetPort: 80
+    - name: http
       protocol: TCP
+      port: 80
+      targetPort: 80

@@ -1,0 +1,41 @@
+# =============================================================================
+# NFS-PV.YAML - NFS PersistentVolume for file uploads
+# =============================================================================
+# Sử dụng NFS server từ EC2 standalone (DATA_SERVER_IP)
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-uploads-pv
+  labels:
+    type: nfs
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: PLACEHOLDER_NFS_SERVER  # Sẽ được thay thế bởi CI/CD
+    path: /srv/nfs/uploads
+  mountOptions:
+    - nfsvers=4.1
+    - rsize=1048576
+    - wsize=1048576
+    - hard
+    - timeo=600
+    - retrans=2
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-uploads-pvc
+  namespace: devops-final
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: ""
+  volumeName: nfs-uploads-pv

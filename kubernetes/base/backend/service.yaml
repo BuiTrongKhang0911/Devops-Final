@@ -1,5 +1,5 @@
 # =============================================================================
-# BACKEND SERVICE - Internal access cho backend API
+# BACKEND SERVICE - Expose backend pods
 # =============================================================================
 apiVersion: v1
 kind: Service
@@ -13,6 +13,7 @@ spec:
   selector:
     app: backend
   ports:
-    - port: 8080
-      targetPort: 8080
+    - name: http
       protocol: TCP
+      port: 8080
+      targetPort: 8080

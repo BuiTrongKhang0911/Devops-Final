@@ -1,0 +1,76 @@
+# =============================================================================
+# SITE.YML - Main playbook chạy tất cả cấu hình
+# =============================================================================
+# Chạy: ansible-playbook -i inventory/hosts.ini playbooks/site.yml
+# =============================================================================
+
+---
+- name: Configure all servers - Common setup
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Upgrade all packages
+      apt:
+        upgrade: dist
+        autoremove: yes
+
+    - name: Install common packages
+      apt:
+        name:
+          - curl
+          - wget
+          - vim
+          - git
+          - htop
+          - net-tools
+          - python3
+          - python3-pip
+        state: present
+
+    - name: Set timezone to Asia/Ho_Chi_Minh
+      timezone:
+        name: Asia/Ho_Chi_Minh
+
+    - name: Display server info
+      debug:
+        msg: |
+          ============================================
+          Server: {{ inventory_hostname }}
+          IP: {{ ansible_host }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          ============================================
+
+# Import specific playbooks
+- import_playbook: sonarqube.yml
+- import_playbook: database.yml
+- import_playbook: nfs-server.yml
+
+- name: Final summary
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ============================================
+          ✅ ALL SERVERS CONFIGURED SUCCESSFULLY!
+          ============================================
+          
+          🔍 SonarQube: Ready on port 9000
+          💾 PostgreSQL: Ready on port 5432
+          📁 NFS Server: Ready on port 2049
+          
+          Next steps:
+          1. Update K8s manifests with DB and NFS Private IPs
+          2. Deploy application to EKS
+          3. Configure CI/CD pipeline
+          ============================================
+
