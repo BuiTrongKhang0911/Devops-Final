@@ -32,6 +32,22 @@ module "eks" {
   enable_irsa = true
 
   # ==========================================
+  # AWS AUTH - Cho phép IAM users/roles truy cập cluster
+  # ==========================================
+  # Tự động thêm current IAM user/role vào aws-auth
+  # Điều này cho phép GitHub Actions (dùng cùng credentials) truy cập cluster
+  enable_cluster_creator_admin_permissions = true
+  
+  # Nếu cần thêm IAM users khác, uncomment và thêm ARN:
+  # aws_auth_users = [
+  #   {
+  #     userarn  = "arn:aws:iam::ACCOUNT_ID:user/github-actions"
+  #     username = "github-actions"
+  #     groups   = ["system:masters"]
+  #   }
+  # ]
+
+  # ==========================================
   # CLUSTER ADDONS
   # ==========================================
   cluster_addons = {
