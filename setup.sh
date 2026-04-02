@@ -321,11 +321,29 @@ fi
 # =============================================================================
 print_header "8. Kubernetes - Setup Base Resources"
 
-# Check if kubectl is configured
+# Configure kubectl if not already configured
 if ! kubectl cluster-info &>/dev/null; then
-    print_warning "kubectl chưa được cấu hình. Bỏ qua Kubernetes setup."
-    print_info "Chạy lệnh sau để cấu hình: ${KUBECONFIG_COMMAND}"
+    print_warning "kubectl chưa được cấu hình. Đang cấu hình..."
+    
+    # Run kubeconfig command
+    eval "$KUBECONFIG_COMMAND"
+    
+    # Verify connection
+    if kubectl cluster-info &>/dev/null; then
+        print_success "kubectl đã được cấu hình thành công!"
+    else
+        print_error "Không thể kết nối với EKS cluster"
+        print_info "Thử chạy thủ công: ${KUBECONFIG_COMMAND}"
+        print_warning "Bỏ qua Kubernetes setup. Chạy lại ./setup.sh sau khi config kubectl."
+        # Skip Kubernetes setup but continue to summary
+        kubectl_configured=false
+    fi
 else
+    print_success "kubectl đã được cấu hình"
+    kubectl_configured=true
+fi
+
+if [ "${kubectl_configured:-true}" = "true" ]; then
     print_info "Applying Kubernetes base resources..."
     
     # Apply namespace
