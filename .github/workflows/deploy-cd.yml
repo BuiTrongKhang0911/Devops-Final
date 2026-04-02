@@ -78,12 +78,16 @@ jobs:
           echo "📦 Deploying commit: $COMMIT_SHA"
           echo "📦 Short SHA: $SHORT_SHA"
           
-          # Update backend image - thay thế PLACEHOLDER_IMAGE_TAG
-          sed -i "s|DOCKER_USERNAME/document-management-backend:PLACEHOLDER_IMAGE_TAG|${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${SHORT_SHA}|g" \
+          # Update backend image - thay thế cả DOCKER_USERNAME và PLACEHOLDER_IMAGE_TAG
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
+            kubernetes/base/backend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" \
             kubernetes/base/backend/deployment.yaml
           
-          # Update frontend image - thay thế PLACEHOLDER_IMAGE_TAG
-          sed -i "s|DOCKER_USERNAME/document-management-frontend:PLACEHOLDER_IMAGE_TAG|${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${SHORT_SHA}|g" \
+          # Update frontend image - thay thế cả DOCKER_USERNAME và PLACEHOLDER_IMAGE_TAG
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
+            kubernetes/base/frontend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" \
             kubernetes/base/frontend/deployment.yaml
           
           # Update ConfigMap với DATA_SERVER_IP (cho cả DB và NFS)
