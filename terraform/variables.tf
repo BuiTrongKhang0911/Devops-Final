@@ -117,3 +117,17 @@ variable "db_nfs_volume_size" {
   type        = number
   default     = 30
 }
+# ==========================================
+# HTTPS CONFIGURATION (OPTIONAL)
+# ==========================================
+variable "domain_name" {
+  description = "Domain name cho HTTPS (để trống nếu không dùng)"
+  type        = string
+  default     = ""
+}
+
+variable "enable_https" {
+  description = "Bật HTTPS với ACM certificate và Route53"
+  type        = bool
+  default     = false
+}
