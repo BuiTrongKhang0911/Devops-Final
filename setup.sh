@@ -143,8 +143,24 @@ if [ -z "$DB_PASSWORD" ]; then
     print_warning "DB_PASSWORD không có trong .env, dùng mặc định: $DB_PASSWORD"
 fi
 
+# Set default HTTPS configuration
+if [ -z "$DOMAIN_NAME" ]; then
+    DOMAIN_NAME=""
+fi
+
+if [ -z "$ENABLE_HTTPS" ]; then
+    ENABLE_HTTPS="false"
+fi
+
 print_success "AWS_KEY_NAME: $AWS_KEY_NAME"
 print_success "DB_PASSWORD: ${DB_PASSWORD:0:3}***${DB_PASSWORD: -3}"
+
+# Display HTTPS status
+if [ "$ENABLE_HTTPS" = "true" ] && [ -n "$DOMAIN_NAME" ]; then
+    print_success "HTTPS: Enabled for $DOMAIN_NAME"
+else
+    print_info "HTTPS: Disabled (App will use HTTP only)"
+fi
 
 # Check SSH key file
 SSH_KEY_PATH="${AWS_KEY_NAME}.pem"
@@ -169,7 +185,11 @@ print_info "Initializing Terraform..."
 terraform init -upgrade
 
 print_info "Planning infrastructure..."
-terraform plan -var="key_name=$AWS_KEY_NAME" -out=tfplan
+terraform plan \
+  -var="key_name=$AWS_KEY_NAME" \
+  -var="domain_name=$DOMAIN_NAME" \
+  -var="enable_https=$ENABLE_HTTPS" \
+  -out=tfplan
 
 echo ""
 read -p "Tiếp tục apply infrastructure? (y/n) " -n 1 -r
@@ -180,6 +200,10 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
 fi
 
 print_info "Applying infrastructure... (15-20 phút)"
+if [ "$ENABLE_HTTPS" = "true" ] && [ -n "$DOMAIN_NAME" ]; then
+    print_warning "HTTPS enabled - Certificate validation có thể mất 5-15 phút"
+    print_info "Đảm bảo domain nameserver đã trỏ về Route53!"
+fi
 terraform apply tfplan
 
 # Get outputs
@@ -198,9 +222,20 @@ DB_NFS_PRIVATE_IP=$(terraform output -raw db_nfs_private_ip)
 EKS_OIDC_PROVIDER_ARN=$(terraform output -raw eks_oidc_provider_arn)
 KUBECONFIG_COMMAND=$(terraform output -raw kubeconfig_command)
 
+# Get HTTPS outputs if enabled
+if [ "$ENABLE_HTTPS" = "true" ] && [ -n "$DOMAIN_NAME" ]; then
+    HTTPS_CERT_ARN=$(terraform output -raw https_certificate_arn 2>/dev/null || echo "N/A")
+else
+    HTTPS_CERT_ARN="N/A - HTTPS not enabled"
+fi
+
 print_success "EKS Cluster: $EKS_CLUSTER_NAME"
 print_success "SonarQube IP: $SONARQUBE_PUBLIC_IP"
 print_success "DB+NFS IP: $DB_NFS_PUBLIC_IP"
+
+if [ "$ENABLE_HTTPS" = "true" ] && [ -n "$DOMAIN_NAME" ]; then
+    print_success "HTTPS Certificate: Ready"
+fi
 
 cd ..
 
@@ -282,6 +317,131 @@ else
 fi
 
 # =============================================================================
+# KUBERNETES BASE SETUP (Infrastructure)
+# =============================================================================
+print_header "8. Kubernetes - Setup Base Resources"
+
+# Check if kubectl is configured
+if ! kubectl cluster-info &>/dev/null; then
+    print_warning "kubectl chưa được cấu hình. Bỏ qua Kubernetes setup."
+    print_info "Chạy lệnh sau để cấu hình: ${KUBECONFIG_COMMAND}"
+else
+    print_info "Applying Kubernetes base resources..."
+    
+    # Apply namespace
+    kubectl apply -f kubernetes/namespace.yaml
+    
+    # Apply ConfigMap với placeholders được thay thế
+    echo "📝 Applying ConfigMap..."
+    cat kubernetes/configmap.yaml | \
+      sed "s|PLACEHOLDER_DB_HOST|${DB_NFS_PRIVATE_IP}|g" | \
+      sed "s|PLACEHOLDER_NFS_SERVER|${DB_NFS_PRIVATE_IP}|g" | \
+      kubectl apply -f -
+    
+    # Apply Secrets với placeholders được thay thế
+    echo "🔐 Applying Secrets..."
+    cat kubernetes/secrets.yaml | \
+      sed "s|PLACEHOLDER_DB_PASSWORD|${DB_PASSWORD}|g" | \
+      kubectl apply -f -
+    
+    # Apply NFS PV với placeholders được thay thế
+    echo "💾 Applying NFS PersistentVolume..."
+    cat kubernetes/nfs-pv.yaml | \
+      sed "s|PLACEHOLDER_NFS_SERVER|${DB_NFS_PRIVATE_IP}|g" | \
+      kubectl apply -f -
+    
+    # Wait for PVC
+    echo "⏳ Waiting for NFS PVC to be bound..."
+    kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/nfs-uploads-pvc -n devops-final --timeout=60s || true
+    
+    # Apply Services
+    kubectl apply -f kubernetes/base/backend/service.yaml
+    kubectl apply -f kubernetes/base/frontend/service.yaml
+    
+    # Apply HPA
+    kubectl apply -f kubernetes/base/backend/hpa.yaml
+    kubectl apply -f kubernetes/base/frontend/hpa.yaml
+    
+    # Apply Ingress với HTTPS config (nếu có)
+    echo "🌐 Applying Ingress..."
+    if [ "$ENABLE_HTTPS" = "true" ] && [ -n "$DOMAIN_NAME" ] && [ "$HTTPS_CERT_ARN" != "N/A - HTTPS not enabled" ]; then
+        cat kubernetes/ingress.yaml | \
+          sed "s|PLACEHOLDER_CERT_ARN|${HTTPS_CERT_ARN}|g" | \
+          sed "s|PLACEHOLDER_DOMAIN|${DOMAIN_NAME}|g" | \
+          kubectl apply -f -
+        print_info "HTTPS enabled for ${DOMAIN_NAME}"
+        
+        # Wait for ALB to be created
+        echo "⏳ Waiting for ALB to be created (this may take 2-3 minutes)..."
+        sleep 30  # Đợi Ingress Controller bắt đầu tạo ALB
+        
+        # Get ALB URL
+        ALB_URL=""
+        for i in {1..12}; do
+            ALB_URL=$(kubectl get ingress app-ingress -n devops-final -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [ -n "$ALB_URL" ]; then
+                print_success "ALB created: $ALB_URL"
+                break
+            fi
+            echo "Waiting for ALB... ($i/12)"
+            sleep 10
+        done
+        
+        # Auto-create CNAME record if ALB is ready
+        if [ -n "$ALB_URL" ]; then
+            echo "🌐 Creating CNAME record for app.${DOMAIN_NAME}..."
+            
+            # Get Hosted Zone ID
+            HOSTED_ZONE_ID=$(aws route53 list-hosted-zones --query "HostedZones[?Name=='${DOMAIN_NAME}.'].Id" --output text | cut -d'/' -f3)
+            
+            if [ -n "$HOSTED_ZONE_ID" ]; then
+                # Create/Update CNAME record
+                aws route53 change-resource-record-sets \
+                  --hosted-zone-id "$HOSTED_ZONE_ID" \
+                  --change-batch "{
+                    \"Changes\": [{
+                      \"Action\": \"UPSERT\",
+                      \"ResourceRecordSet\": {
+                        \"Name\": \"app.${DOMAIN_NAME}\",
+                        \"Type\": \"CNAME\",
+                        \"TTL\": 300,
+                        \"ResourceRecords\": [{\"Value\": \"${ALB_URL}\"}]
+                      }
+                    }]
+                  }" > /dev/null 2>&1
+                
+                if [ $? -eq 0 ]; then
+                    print_success "CNAME record created: app.${DOMAIN_NAME} -> ${ALB_URL}"
+                    print_info "Truy cập: https://app.${DOMAIN_NAME} (đợi 2-5 phút cho DNS propagation)"
+                else
+                    print_warning "Không thể tạo CNAME tự động. Tạo thủ công:"
+                    echo "  Record name: app"
+                    echo "  Record type: CNAME"
+                    echo "  Value: ${ALB_URL}"
+                fi
+            else
+                print_warning "Không tìm thấy Hosted Zone. Tạo CNAME thủ công."
+            fi
+        else
+            print_warning "ALB chưa sẵn sàng. Tạo CNAME sau khi deploy app:"
+            echo "  kubectl get ingress -n devops-final"
+        fi
+    else
+        cat kubernetes/ingress.yaml | \
+          sed '/certificate-arn/d' | \
+          sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+          sed '/ssl-redirect/d' | \
+          sed '/host: app.PLACEHOLDER_DOMAIN/d' | \
+          kubectl apply -f -
+        print_info "HTTP-only mode"
+    fi
+    
+    print_success "Kubernetes base resources applied!"
+    echo ""
+    print_warning "LƯU Ý: Deployments sẽ được apply bởi CD pipeline (cần Docker images)"
+fi
+
+# =============================================================================
 # SUMMARY
 # =============================================================================
 print_header "🎉 SETUP HOÀN TẤT!"
@@ -314,27 +474,96 @@ cat << EOF
    - NFS: ${DB_NFS_PRIVATE_IP}:/srv/nfs/uploads
    - SSH: ssh -i ${SSH_KEY_PATH} ubuntu@${DB_NFS_PUBLIC_IP}
 
-📋 GITHUB ACTIONS SECRETS (cần thêm vào repo):
-   
-   Các secrets BẮT BUỘC:
-   - AWS_ACCESS_KEY_ID: <your-aws-access-key>
-   - AWS_SECRET_ACCESS_KEY: <your-aws-secret-key>
+EOF
+
+# =============================================================================
+# HTTPS SECTION (if enabled)
+# =============================================================================
+if [ "$ENABLE_HTTPS" = "true" ] && [ -n "$DOMAIN_NAME" ]; then
+echo -e "${CYAN}"
+cat << EOF
+=============================================
+           🔒 HTTPS CONFIGURATION
+=============================================
+
+Domain: ${DOMAIN_NAME}
+Certificate ARN: ${HTTPS_CERT_ARN}
+Status: ✅ Configured
+
+📝 THÊM VÀO GITHUB SECRETS (chỉ cần 4 secrets):
+   - AWS_ACCESS_KEY_ID
+   - AWS_SECRET_ACCESS_KEY
    - EKS_CLUSTER_NAME: ${EKS_CLUSTER_NAME}
-   - DATA_SERVER_IP: ${DB_NFS_PRIVATE_IP}
+   - DOCKER_USERNAME
+
+🌐 DNS CONFIGURATION:
+   - CNAME record đã được tạo tự động (nếu có ALB)
+   - Truy cập: https://app.${DOMAIN_NAME}
+   - Đợi 2-5 phút cho DNS propagation
+
+=============================================
+EOF
+echo -e "${NC}"
+fi
+
+# =============================================================================
+# GITHUB SECRETS SECTION
+# =============================================================================
+echo -e "${YELLOW}"
+cat << EOF
+=============================================
+      📋 GITHUB ACTIONS SECRETS
+=============================================
+
+Vào GitHub repo → Settings → Secrets → Actions
+
+✅ SECRETS BẮT BUỘC (chỉ 4 secrets):
+   1. AWS_ACCESS_KEY_ID: <your-aws-access-key>
+   2. AWS_SECRET_ACCESS_KEY: <your-aws-secret-key>
+   3. EKS_CLUSTER_NAME: ${EKS_CLUSTER_NAME}
+   4. DOCKER_USERNAME: <your-dockerhub-username>
+
+ℹ️  SECRETS CHO CI (không liên quan CD):
    - SONAR_HOST_URL: http://${SONARQUBE_PUBLIC_IP}:9000
    - SONAR_TOKEN: <generate từ SonarQube UI>
-   - DOCKER_USERNAME: <your-dockerhub-username>
    - DOCKER_PASSWORD: <your-dockerhub-password>
-   - DB_PASSWORD: ${DB_PASSWORD}
-   
-   💡 AWS credentials dùng để GitHub Actions kết nối EKS cluster
 
-📝 NEXT STEPS:
-   1. Truy cập SonarQube và đổi password
-   2. Generate SonarQube token: User > My Account > Security > Generate Token
-   3. Thêm tất cả secrets vào GitHub repo
-   4. Update K8s manifests với DB_HOST và NFS_SERVER_IP
-   5. Push code để trigger CI/CD pipeline
+💡 Setup.sh đã cấu hình:
+   ✅ ConfigMap (DB_HOST, NFS_SERVER)
+   ✅ Secrets (DB_PASSWORD)
+   ✅ Ingress (HTTPS certificate)
+   ✅ CNAME record (nếu có domain)
+
+=============================================
+EOF
+echo -e "${NC}"
+
+# =============================================================================
+# NEXT STEPS SECTION
+# =============================================================================
+echo -e "${GREEN}"
+cat << EOF
+=============================================
+           📝 NEXT STEPS
+=============================================
+
+1️⃣  Cấu hình SonarQube:
+   - Truy cập: http://${SONARQUBE_PUBLIC_IP}:9000
+   - Login: admin / admin
+   - Đổi password
+   - Generate token: My Account → Security → Generate Token
+
+2️⃣  Thêm GitHub Secrets:
+   - Vào repo → Settings → Secrets and variables → Actions
+   - Thêm tất cả secrets ở trên
+
+3️⃣  Deploy ứng dụng:
+   - Push code lên GitHub: git push origin main
+   - CI/CD sẽ tự động chạy
+
+4️⃣  Kiểm tra deployment:
+   - kubectl get pods -n devops-final
+   - kubectl get ingress -n devops-final
 
 =============================================
 EOF
