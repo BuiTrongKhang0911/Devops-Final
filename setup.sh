@@ -137,7 +137,14 @@ if [ -z "$AWS_KEY_NAME" ] || [ "$AWS_KEY_NAME" = "your-key-name-here" ]; then
     exit 1
 fi
 
+# Set default DB_PASSWORD if not provided
+if [ -z "$DB_PASSWORD" ]; then
+    DB_PASSWORD="SecurePassword123!"
+    print_warning "DB_PASSWORD không có trong .env, dùng mặc định: $DB_PASSWORD"
+fi
+
 print_success "AWS_KEY_NAME: $AWS_KEY_NAME"
+print_success "DB_PASSWORD: ${DB_PASSWORD:0:3}***${DB_PASSWORD: -3}"
 
 # Check SSH key file
 SSH_KEY_PATH="${AWS_KEY_NAME}.pem"
@@ -270,7 +277,7 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     cd ..
 else
     print_info "Running Ansible playbooks..."
-    ansible-playbook -i inventory/hosts.ini playbooks/site.yml
+    ansible-playbook -i inventory/hosts.ini playbooks/site.yml -e "db_password=${DB_PASSWORD}"
     cd ..
 fi
 
@@ -318,7 +325,7 @@ cat << EOF
    - SONAR_TOKEN: <generate từ SonarQube UI>
    - DOCKER_USERNAME: <your-dockerhub-username>
    - DOCKER_PASSWORD: <your-dockerhub-password>
-   - DB_PASSWORD: SecurePassword123!
+   - DB_PASSWORD: ${DB_PASSWORD}
    
    💡 AWS credentials dùng để GitHub Actions kết nối EKS cluster
 

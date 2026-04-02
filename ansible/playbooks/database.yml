@@ -14,7 +14,9 @@
     postgres_version: "16"
     db_name: "document_db"
     db_user: "docuser"
-    db_password: "SecurePassword123!"  # ⚠️ Nên dùng Ansible Vault trong production thật
+    # Password được truyền từ setup.sh qua -e "db_password=..."
+    # Nếu không truyền, dùng giá trị mặc định
+    db_password: "{{ db_password | default('SecurePassword123!') }}"
 
   tasks:
     - name: Update apt cache
