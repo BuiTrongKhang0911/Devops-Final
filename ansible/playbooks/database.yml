@@ -61,6 +61,15 @@
         type: database
         privs: ALL
 
+    - name: Grant schema privileges to user
+      become_user: postgres
+      postgresql_privs:
+        database: "{{ db_name }}"
+        roles: "{{ db_user }}"
+        type: schema
+        objs: public
+        privs: ALL
+
     - name: Configure PostgreSQL to listen on all interfaces
       lineinfile:
         path: /etc/postgresql/{{ postgres_version }}/main/postgresql.conf

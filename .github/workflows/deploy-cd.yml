@@ -134,6 +134,10 @@ jobs:
           # Apply frontend
           kubectl apply -f kubernetes/base/frontend/
           
+          # Apply HPA
+          kubectl apply -f kubernetes/base/backend/hpa.yaml
+          kubectl apply -f kubernetes/base/frontend/hpa.yaml
+          
           # Apply ingress
           kubectl apply -f kubernetes/ingress.yaml
           
