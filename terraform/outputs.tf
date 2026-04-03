@@ -194,34 +194,6 @@ output "ansible_inventory_snippet" {
 }
 
 # ==========================================
-# HTTPS CONFIGURATION
-# ==========================================
-output "https_certificate_arn" {
-  description = "ARN của ACM Certificate (nếu HTTPS được bật)"
-  value       = var.enable_https ? try(aws_acm_certificate.cert[0].arn, "N/A - HTTPS not enabled") : "N/A - HTTPS not enabled"
-}
-
-output "route53_nameservers" {
-  description = "Route53 Hosted Zone nameservers (nếu HTTPS được bật)"
-  value       = var.enable_https ? try(data.aws_route53_zone.main[0].name_servers, []) : []
-}
-
-output "https_status" {
-  description = "HTTPS configuration status"
-  value = var.enable_https ? {
-    enabled     = "true"
-    domain      = var.domain_name
-    wildcard    = "*.${var.domain_name}"
-    cert_arn    = try(aws_acm_certificate.cert[0].arn, "pending")
-    hosted_zone = try(data.aws_route53_zone.main[0].zone_id, "not_found")
-    message     = "✅ HTTPS enabled - Certificate ARN ready for Ingress"
-    } : {
-    enabled = "false"
-    message = "⚠️  HTTPS disabled - Set ENABLE_HTTPS=true and DOMAIN_NAME in .env to enable"
-  }
-}
-
-# ==========================================
 # MONITORING STACK
 # ==========================================
 output "monitoring_info" {
