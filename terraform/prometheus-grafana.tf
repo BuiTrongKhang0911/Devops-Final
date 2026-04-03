@@ -20,6 +20,13 @@ resource "helm_release" "kube_prometheus_stack" {
   version    = "56.0.0"
 
   create_namespace = true
+  
+  # Tăng timeout vì Prometheus stack rất nặng
+  timeout = 900  # 15 phút
+  
+  # Cho phép Terraform chờ resources ready
+  wait          = true
+  wait_for_jobs = true
 
   # =============================================================================
   # PROMETHEUS CONFIGURATION
@@ -32,6 +39,11 @@ resource "helm_release" "kube_prometheus_stack" {
   set {
     name  = "prometheus.prometheusSpec.scrapeInterval"
     value = "30s"
+  }
+
+  set {
+    name  = "prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.storageClassName"
+    value = "gp3"
   }
 
   set {
@@ -78,6 +90,11 @@ resource "helm_release" "kube_prometheus_stack" {
   }
 
   set {
+    name  = "grafana.persistence.storageClassName"
+    value = "gp3"
+  }
+
+  set {
     name  = "grafana.persistence.size"
     value = "10Gi"
   }
@@ -117,6 +134,11 @@ resource "helm_release" "kube_prometheus_stack" {
   }
 
   set {
+    name  = "alertmanager.alertmanagerSpec.storage.volumeClaimTemplate.spec.storageClassName"
+    value = "gp3"
+  }
+
+  set {
     name  = "alertmanager.alertmanagerSpec.storage.volumeClaimTemplate.spec.resources.requests.storage"
     value = "10Gi"
   }
@@ -147,7 +169,8 @@ resource "helm_release" "kube_prometheus_stack" {
 
   depends_on = [
     module.eks,
-    helm_release.metrics_server
+    helm_release.metrics_server,
+    aws_eks_addon.ebs_csi_driver
   ]
 }
 
