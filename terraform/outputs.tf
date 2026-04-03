@@ -192,3 +192,18 @@ output "ansible_inventory_snippet" {
     
     EOT
 }
+
+# ==========================================
+# MONITORING STACK
+# ==========================================
+output "monitoring_info" {
+  description = "Monitoring stack access information"
+  value = {
+    prometheus_url = "kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090"
+    grafana_url    = "kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
+    grafana_user   = "admin"
+    grafana_pass   = "admin123"
+    namespace      = "monitoring"
+    message        = "✅ Monitoring stack installed - Use port-forward to access"
+  }
+}

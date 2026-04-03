@@ -321,11 +321,29 @@ fi
 # =============================================================================
 print_header "8. Kubernetes - Setup Base Resources"
 
-# Check if kubectl is configured
+# Configure kubectl if not already configured
 if ! kubectl cluster-info &>/dev/null; then
-    print_warning "kubectl chưa được cấu hình. Bỏ qua Kubernetes setup."
-    print_info "Chạy lệnh sau để cấu hình: ${KUBECONFIG_COMMAND}"
+    print_warning "kubectl chưa được cấu hình. Đang cấu hình..."
+    
+    # Run kubeconfig command
+    eval "$KUBECONFIG_COMMAND"
+    
+    # Verify connection
+    if kubectl cluster-info &>/dev/null; then
+        print_success "kubectl đã được cấu hình thành công!"
+    else
+        print_error "Không thể kết nối với EKS cluster"
+        print_info "Thử chạy thủ công: ${KUBECONFIG_COMMAND}"
+        print_warning "Bỏ qua Kubernetes setup. Chạy lại ./setup.sh sau khi config kubectl."
+        # Skip Kubernetes setup but continue to summary
+        kubectl_configured=false
+    fi
 else
+    print_success "kubectl đã được cấu hình"
+    kubectl_configured=true
+fi
+
+if [ "${kubectl_configured:-true}" = "true" ]; then
     print_info "Applying Kubernetes base resources..."
     
     # Apply namespace
@@ -365,10 +383,18 @@ else
     # Apply Ingress với HTTPS config (nếu có)
     echo "🌐 Applying Ingress..."
     if [ "$ENABLE_HTTPS" = "true" ] && [ -n "$DOMAIN_NAME" ] && [ "$HTTPS_CERT_ARN" != "N/A - HTTPS not enabled" ]; then
+        # Apply App Ingress
         cat kubernetes/ingress.yaml | \
           sed "s|PLACEHOLDER_CERT_ARN|${HTTPS_CERT_ARN}|g" | \
           sed "s|PLACEHOLDER_DOMAIN|${DOMAIN_NAME}|g" | \
           kubectl apply -f -
+        
+        # Apply Grafana Ingress
+        cat kubernetes/monitoring/grafana-ingress.yaml | \
+          sed "s|PLACEHOLDER_CERT_ARN|${HTTPS_CERT_ARN}|g" | \
+          sed "s|PLACEHOLDER_DOMAIN|${DOMAIN_NAME}|g" | \
+          kubectl apply -f -
+        
         print_info "HTTPS enabled for ${DOMAIN_NAME}"
         
         # Wait for ALB to be created
@@ -387,22 +413,48 @@ else
             sleep 10
         done
         
-        # Auto-create CNAME record if ALB is ready
+        # Auto-create CNAME records if ALB is ready
         if [ -n "$ALB_URL" ]; then
-            echo "🌐 Creating CNAME record for app.${DOMAIN_NAME}..."
+            echo "🌐 Creating CNAME records..."
             
             # Get Hosted Zone ID
             HOSTED_ZONE_ID=$(aws route53 list-hosted-zones --query "HostedZones[?Name=='${DOMAIN_NAME}.'].Id" --output text | cut -d'/' -f3)
             
             if [ -n "$HOSTED_ZONE_ID" ]; then
-                # Create/Update CNAME record
+                # Create/Update CNAME record for root domain
+                echo "  Creating ${DOMAIN_NAME}..."
                 aws route53 change-resource-record-sets \
                   --hosted-zone-id "$HOSTED_ZONE_ID" \
                   --change-batch "{
                     \"Changes\": [{
                       \"Action\": \"UPSERT\",
                       \"ResourceRecordSet\": {
-                        \"Name\": \"app.${DOMAIN_NAME}\",
+                        \"Name\": \"${DOMAIN_NAME}\",
+                        \"Type\": \"A\",
+                        \"AliasTarget\": {
+                          \"HostedZoneId\": \"Z1LMS91P8CMLE5\",
+                          \"DNSName\": \"${ALB_URL}\",
+                          \"EvaluateTargetHealth\": false
+                        }
+                      }
+                    }]
+                  }" > /dev/null 2>&1
+                
+                if [ $? -eq 0 ]; then
+                    print_success "A record created: ${DOMAIN_NAME} -> ${ALB_URL}"
+                else
+                    print_warning "Không thể tạo A record cho domain gốc tự động"
+                fi
+                
+                # Create/Update CNAME record for grafana
+                echo "  Creating grafana.${DOMAIN_NAME}..."
+                aws route53 change-resource-record-sets \
+                  --hosted-zone-id "$HOSTED_ZONE_ID" \
+                  --change-batch "{
+                    \"Changes\": [{
+                      \"Action\": \"UPSERT\",
+                      \"ResourceRecordSet\": {
+                        \"Name\": \"grafana.${DOMAIN_NAME}\",
                         \"Type\": \"CNAME\",
                         \"TTL\": 300,
                         \"ResourceRecords\": [{\"Value\": \"${ALB_URL}\"}]
@@ -411,16 +463,19 @@ else
                   }" > /dev/null 2>&1
                 
                 if [ $? -eq 0 ]; then
-                    print_success "CNAME record created: app.${DOMAIN_NAME} -> ${ALB_URL}"
-                    print_info "Truy cập: https://app.${DOMAIN_NAME} (đợi 2-5 phút cho DNS propagation)"
+                    print_success "CNAME created: grafana.${DOMAIN_NAME} -> ${ALB_URL}"
                 else
-                    print_warning "Không thể tạo CNAME tự động. Tạo thủ công:"
-                    echo "  Record name: app"
-                    echo "  Record type: CNAME"
-                    echo "  Value: ${ALB_URL}"
+                    print_warning "Không thể tạo CNAME cho grafana tự động"
                 fi
+                
+                print_info "Truy cập:"
+                echo "  - App: https://${DOMAIN_NAME}"
+                echo "  - Grafana: https://grafana.${DOMAIN_NAME}"
+                echo "  (Đợi 2-5 phút cho DNS propagation)"
             else
-                print_warning "Không tìm thấy Hosted Zone. Tạo CNAME thủ công."
+                print_warning "Không tìm thấy Hosted Zone. Tạo DNS record thủ công:"
+                echo "  1. ${DOMAIN_NAME} -> ${ALB_URL} (A record - Alias)"
+                echo "  2. grafana.${DOMAIN_NAME} -> ${ALB_URL} (CNAME)"
             fi
         else
             print_warning "ALB chưa sẵn sàng. Tạo CNAME sau khi deploy app:"
