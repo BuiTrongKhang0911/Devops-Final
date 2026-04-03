@@ -80,10 +80,10 @@ else
 fi
 
 # =============================================================================
-# STEP 3: Delete Route53 CNAME record (created by setup.sh)
+# STEP 3: Delete Route53 CNAME records (created by setup.sh)
 # =============================================================================
 echo ""
-echo -e "${YELLOW}=== Step 3: Deleting Route53 CNAME record ===${NC}"
+echo -e "${YELLOW}=== Step 3: Deleting Route53 CNAME records ===${NC}"
 
 # Get Hosted Zone ID
 HOSTED_ZONE_ID=$(aws route53 list-hosted-zones \
@@ -95,24 +95,57 @@ if [ -z "$HOSTED_ZONE_ID" ] || [ "$HOSTED_ZONE_ID" == "None" ]; then
 else
   echo "Found Hosted Zone: $HOSTED_ZONE_ID"
   
-  # Get CNAME record value
-  CNAME_VALUE=$(aws route53 list-resource-record-sets \
+  # Delete A record for root domain
+  echo "  Deleting ${DOMAIN_NAME}..."
+  RECORD_EXISTS=$(aws route53 list-resource-record-sets \
     --hosted-zone-id $HOSTED_ZONE_ID \
-    --query "ResourceRecordSets[?Name=='app.devops-midterm.online.' && Type=='CNAME'].ResourceRecords[0].Value" \
+    --query "ResourceRecordSets[?Name=='devops-midterm.online.' && Type=='A'].AliasTarget.DNSName" \
     --output text 2>/dev/null || echo "")
   
-  if [ -z "$CNAME_VALUE" ] || [ "$CNAME_VALUE" == "None" ]; then
-    echo -e "${GREEN}✅ No CNAME record found${NC}"
+  if [ -z "$RECORD_EXISTS" ] || [ "$RECORD_EXISTS" == "None" ]; then
+    echo -e "${GREEN}✅ No A record found for root domain${NC}"
   else
-    echo "Deleting CNAME: app.devops-midterm.online -> $CNAME_VALUE"
-    
-    # Create change batch JSON
-    cat > /tmp/delete-cname.json <<EOF
+    cat > /tmp/delete-root-a.json <<EOF
 {
   "Changes": [{
     "Action": "DELETE",
     "ResourceRecordSet": {
-      "Name": "app.devops-midterm.online",
+      "Name": "devops-midterm.online",
+      "Type": "A",
+      "AliasTarget": {
+        "HostedZoneId": "Z1LMS91P8CMLE5",
+        "DNSName": "$RECORD_EXISTS",
+        "EvaluateTargetHealth": false
+      }
+    }
+  }]
+}
+EOF
+    
+    aws route53 change-resource-record-sets \
+      --hosted-zone-id $HOSTED_ZONE_ID \
+      --change-batch file:///tmp/delete-root-a.json 2>/dev/null || true
+    
+    rm -f /tmp/delete-root-a.json
+    echo -e "${GREEN}✅ A record deleted: devops-midterm.online${NC}"
+  fi
+  
+  # Delete CNAME record for grafana
+  echo "  Deleting grafana.devops-midterm.online..."
+  CNAME_VALUE=$(aws route53 list-resource-record-sets \
+    --hosted-zone-id $HOSTED_ZONE_ID \
+    --query "ResourceRecordSets[?Name=='grafana.devops-midterm.online.' && Type=='CNAME'].ResourceRecords[0].Value" \
+    --output text 2>/dev/null || echo "")
+  
+  if [ -z "$CNAME_VALUE" ] || [ "$CNAME_VALUE" == "None" ]; then
+    echo -e "${GREEN}✅ No CNAME record found for grafana${NC}"
+  else
+    cat > /tmp/delete-grafana-cname.json <<EOF
+{
+  "Changes": [{
+    "Action": "DELETE",
+    "ResourceRecordSet": {
+      "Name": "grafana.devops-midterm.online",
       "Type": "CNAME",
       "TTL": 300,
       "ResourceRecords": [{"Value": "$CNAME_VALUE"}]
@@ -123,10 +156,10 @@ EOF
     
     aws route53 change-resource-record-sets \
       --hosted-zone-id $HOSTED_ZONE_ID \
-      --change-batch file:///tmp/delete-cname.json 2>/dev/null || true
+      --change-batch file:///tmp/delete-grafana-cname.json 2>/dev/null || true
     
-    rm -f /tmp/delete-cname.json
-    echo -e "${GREEN}✅ CNAME record deleted${NC}"
+    rm -f /tmp/delete-grafana-cname.json
+    echo -e "${GREEN}✅ CNAME record deleted: grafana.devops-midterm.online${NC}"
   fi
 fi
 
