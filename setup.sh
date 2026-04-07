@@ -152,6 +152,15 @@ if [ -z "$ENABLE_HTTPS" ]; then
     ENABLE_HTTPS="false"
 fi
 
+# Set default alert email (optional)
+if [ -z "$ALERT_EMAIL" ]; then
+    ALERT_EMAIL=""
+fi
+
+if [ -z "$ALERT_EMAIL_PASSWORD" ]; then
+    ALERT_EMAIL_PASSWORD=""
+fi
+
 print_success "AWS_KEY_NAME: $AWS_KEY_NAME"
 print_success "DB_PASSWORD: ${DB_PASSWORD:0:3}***${DB_PASSWORD: -3}"
 
@@ -509,8 +518,23 @@ if [ "${kubectl_configured:-true}" = "true" ]; then
     # Apply Alert Rules
     kubectl apply -f kubernetes/monitoring/alert-rules.yaml
     
-    # Apply Alertmanager Config
-    kubectl apply -f kubernetes/monitoring/alertmanager-config.yaml
+    # Apply Alertmanager Config with email placeholders replaced
+    if [ -n "$ALERT_EMAIL" ] && [ -n "$ALERT_EMAIL_PASSWORD" ]; then
+        print_info "Configuring Alertmanager with email notifications..."
+        cat kubernetes/monitoring/alertmanager-config.yaml | \
+          sed "s|PLACEHOLDER_ALERT_EMAIL|${ALERT_EMAIL}|g" | \
+          sed "s|PLACEHOLDER_ALERT_EMAIL_PASSWORD|${ALERT_EMAIL_PASSWORD}|g" | \
+          kubectl apply -f -
+        print_success "Email notifications enabled: $ALERT_EMAIL"
+    else
+        print_warning "Email notifications disabled (ALERT_EMAIL not set)"
+        print_info "Alerts will only show in Prometheus/Grafana UI"
+        # Apply with dummy values (alerts still work, just no email)
+        cat kubernetes/monitoring/alertmanager-config.yaml | \
+          sed "s|PLACEHOLDER_ALERT_EMAIL|noreply@example.com|g" | \
+          sed "s|PLACEHOLDER_ALERT_EMAIL_PASSWORD|dummy|g" | \
+          kubectl apply -f -
+    fi
     
     # Restart Prometheus to load new rules
     echo "⏳ Restarting Prometheus to load alert rules..."

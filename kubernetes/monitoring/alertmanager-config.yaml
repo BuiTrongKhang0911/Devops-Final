@@ -8,36 +8,49 @@ stringData:
   alertmanager.yaml: |-
     global:
       resolve_timeout: 5m
+      smtp_smarthost: 'smtp.gmail.com:587'
+      smtp_from: 'PLACEHOLDER_ALERT_EMAIL'
+      smtp_auth_username: 'PLACEHOLDER_ALERT_EMAIL'
+      smtp_auth_password: 'PLACEHOLDER_ALERT_EMAIL_PASSWORD'
+      smtp_require_tls: true
     
     route:
       group_by: ['alertname', 'cluster', 'service']
       group_wait: 10s
       group_interval: 10s
       repeat_interval: 12h
-      receiver: 'default-receiver'
+      receiver: 'email-receiver'
       routes:
         - matchers:
             - severity = "critical"
-          receiver: 'critical-receiver'
+          receiver: 'critical-email'
           continue: true
         - matchers:
             - severity = "warning"
-          receiver: 'warning-receiver'
+          receiver: 'warning-email'
           continue: true
     
     receivers:
-      - name: 'default-receiver'
-        webhook_configs:
-          - url: 'http://localhost:5001/default'
+      - name: 'email-receiver'
+        email_configs:
+          - to: 'PLACEHOLDER_ALERT_EMAIL'
             send_resolved: true
-      - name: 'critical-receiver'
-        webhook_configs:
-          - url: 'http://localhost:5001/critical'
+            headers:
+              Subject: '[Alertmanager] {{ .GroupLabels.alertname }}'
+      
+      - name: 'critical-email'
+        email_configs:
+          - to: 'PLACEHOLDER_ALERT_EMAIL'
             send_resolved: true
-      - name: 'warning-receiver'
-        webhook_configs:
-          - url: 'http://localhost:5001/warning'
+            headers:
+              Subject: '[CRITICAL] {{ .GroupLabels.alertname }}'
+      
+      - name: 'warning-email'
+        email_configs:
+          - to: 'PLACEHOLDER_ALERT_EMAIL'
             send_resolved: true
+            headers:
+              Subject: '[WARNING] {{ .GroupLabels.alertname }}'
     
     inhibit_rules:
       - source_matchers:
@@ -45,6 +58,8 @@ stringData:
         target_matchers:
           - severity = "warning"
         equal: ['alertname', 'instance']
+
+
 
 
 
