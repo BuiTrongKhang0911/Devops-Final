@@ -235,7 +235,7 @@ else
   echo "Finding and deleting Kubernetes ENIs..."
   ENI_IDS=$(aws ec2 describe-network-interfaces --region $REGION \
     --filters "Name=vpc-id,Values=$VPC_ID" \
-    --query "NetworkInterfaces[?contains(Description, 'ELB') || contains(Description, 'aws-k8s') || contains(Description, 'Amazon EKS')].NetworkInterfaceId" \
+    --query "NetworkInterfaces[?contains(Description, 'ELB') || contains(Description, 'aws-k8s') || contains(Description, 'aws-K8S') || contains(Description, 'Amazon EKS')].NetworkInterfaceId" \
     --output text 2>/dev/null || echo "")
   
   if [ -z "$ENI_IDS" ]; then
@@ -266,127 +266,39 @@ else
     sleep 15
   fi
   
-  # Now delete Security Groups created by Kubernetes (after ENIs are gone)
-  echo "Finding and deleting Kubernetes Security Groups..."
+  # Delete Security Groups created by AWS Load Balancer Controller (if any)
+  echo "Finding Security Groups created by AWS Load Balancer Controller..."
+  
+  # Only delete Security Groups with elbv2.k8s.aws/cluster tag
   SG_IDS=$(aws ec2 describe-security-groups --region $REGION \
-    --filters "Name=vpc-id,Values=$VPC_ID" \
-    --query "SecurityGroups[?GroupName!='default'].GroupId" --output text 2>/dev/null || echo "")
+    --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag-key,Values=elbv2.k8s.aws/cluster" \
+    --query "SecurityGroups[].GroupId" --output text 2>/dev/null || echo "")
   
   if [ -z "$SG_IDS" ]; then
-    echo -e "${GREEN}✅ No Kubernetes Security Groups found${NC}"
+    echo -e "${GREEN}✅ No ALB Security Groups found${NC}"
   else
-    # First pass: Remove all rules from all Security Groups
-    echo "  Pass 1: Removing all Security Group rules..."
-    for SG_ID in $SG_IDS; do
-      echo "    Removing rules from SG: $SG_ID"
-      
-      # Remove all ingress rules
-      aws ec2 describe-security-groups --region $REGION --group-ids $SG_ID \
-        --query "SecurityGroups[0].IpPermissions" --output json > /tmp/sg-ingress-$SG_ID.json 2>/dev/null || true
-      
-      if [ -s /tmp/sg-ingress-$SG_ID.json ] && [ "$(cat /tmp/sg-ingress-$SG_ID.json)" != "[]" ]; then
-        aws ec2 revoke-security-group-ingress --region $REGION \
-          --group-id $SG_ID \
-          --ip-permissions file:///tmp/sg-ingress-$SG_ID.json 2>/dev/null || true
-      fi
-      rm -f /tmp/sg-ingress-$SG_ID.json
-      
-      # Remove all egress rules
-      aws ec2 describe-security-groups --region $REGION --group-ids $SG_ID \
-        --query "SecurityGroups[0].IpPermissionsEgress" --output json > /tmp/sg-egress-$SG_ID.json 2>/dev/null || true
-      
-      if [ -s /tmp/sg-egress-$SG_ID.json ] && [ "$(cat /tmp/sg-egress-$SG_ID.json)" != "[]" ]; then
-        aws ec2 revoke-security-group-egress --region $REGION \
-          --group-id $SG_ID \
-          --ip-permissions file:///tmp/sg-egress-$SG_ID.json 2>/dev/null || true
-      fi
-      rm -f /tmp/sg-egress-$SG_ID.json
-    done
+    echo "Found ALB Security Groups: $SG_IDS"
+    echo "  Deleting ALB Security Groups..."
     
-    echo "  Waiting 10 seconds for rule removal to propagate..."
-    sleep 10
-    
-    # Second pass: Delete all Security Groups
-    echo "  Pass 2: Deleting Security Groups..."
     for SG_ID in $SG_IDS; do
       echo "    Deleting SG: $SG_ID"
       aws ec2 delete-security-group --region $REGION --group-id $SG_ID 2>/dev/null && {
         echo -e "${GREEN}      ✅ Deleted${NC}"
       } || {
-        echo -e "${YELLOW}      ⚠️  Failed (will retry)${NC}"
+        echo -e "${YELLOW}      ⚠️  Cannot delete (will retry after waiting)${NC}"
       }
     done
     
-    # Third pass: Retry deletion after waiting
-    echo "  Waiting 15 seconds before retry..."
-    sleep 15
-    
-    echo "  Pass 3: Retrying failed deletions..."
-    SG_IDS_RETRY=$(aws ec2 describe-security-groups --region $REGION \
-      --filters "Name=vpc-id,Values=$VPC_ID" \
-      --query "SecurityGroups[?GroupName!='default'].GroupId" --output text 2>/dev/null || echo "")
-    
-    if [ -z "$SG_IDS_RETRY" ]; then
-      echo -e "${GREEN}✅ All Security Groups deleted successfully${NC}"
-    else
-      echo -e "${YELLOW}⚠️  Some Security Groups still remain, checking for dependencies...${NC}"
-      
-      for SG_ID in $SG_IDS_RETRY; do
-        echo "    Checking SG: $SG_ID"
-        
-        # Check if any ENI is still using this SG
-        ENI_USING_SG=$(aws ec2 describe-network-interfaces --region $REGION \
-          --filters "Name=group-id,Values=$SG_ID" \
-          --query "NetworkInterfaces[*].[NetworkInterfaceId,Description]" --output text 2>/dev/null || echo "")
-        
-        if [ ! -z "$ENI_USING_SG" ]; then
-          echo -e "${YELLOW}      ⚠️  SG is still used by ENIs:${NC}"
-          echo "$ENI_USING_SG" | while read ENI_ID DESC; do
-            if [ ! -z "$ENI_ID" ]; then
-              echo "        ENI: $ENI_ID ($DESC)"
-              echo "        Force deleting ENI..."
-              
-              ATTACHMENT_ID=$(aws ec2 describe-network-interfaces --region $REGION \
-                --network-interface-ids $ENI_ID \
-                --query "NetworkInterfaces[0].Attachment.AttachmentId" \
-                --output text 2>/dev/null || echo "")
-              
-              if [ ! -z "$ATTACHMENT_ID" ] && [ "$ATTACHMENT_ID" != "None" ]; then
-                aws ec2 detach-network-interface --region $REGION \
-                  --attachment-id $ATTACHMENT_ID --force 2>/dev/null || true
-                sleep 3
-              fi
-              
-              aws ec2 delete-network-interface --region $REGION \
-                --network-interface-id $ENI_ID 2>/dev/null || true
-            fi
-          done
-          sleep 5
-        fi
-        
-        # Try to delete SG again
-        echo "      Attempting to delete SG: $SG_ID"
-        aws ec2 delete-security-group --region $REGION --group-id $SG_ID 2>/dev/null && {
-          echo -e "${GREEN}      ✅ Deleted${NC}"
-        } || {
-          echo -e "${RED}      ❌ Still cannot delete${NC}"
-        }
-      done
-      
-      # Final check
-      FINAL_CHECK=$(aws ec2 describe-security-groups --region $REGION \
-        --filters "Name=vpc-id,Values=$VPC_ID" \
-        --query "SecurityGroups[?GroupName!='default'].GroupId" --output text 2>/dev/null || echo "")
-      
-      if [ -z "$FINAL_CHECK" ]; then
-        echo -e "${GREEN}✅ All Kubernetes Security Groups deleted${NC}"
-      else
-        echo -e "${RED}❌ Failed to delete some Security Groups: $FINAL_CHECK${NC}"
-        echo -e "${YELLOW}   These may be managed by Terraform or have other dependencies.${NC}"
-        echo -e "${YELLOW}   Terraform destroy will attempt to clean them up.${NC}"
-      fi
-    fi
+    # Retry after waiting
+    sleep 10
+    for SG_ID in $SG_IDS; do
+      aws ec2 delete-security-group --region $REGION --group-id $SG_ID 2>/dev/null || true
+    done
   fi
+  
+  echo ""
+  echo -e "${GREEN}✅ Kubernetes resources cleanup completed${NC}"
+  echo -e "${YELLOW}📝 Note: Terraform will delete all other resources (VPC, EKS, EC2, Security Groups)${NC}"
 fi
 
 # =============================================================================

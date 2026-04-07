@@ -164,6 +164,12 @@ fi
 print_success "AWS_KEY_NAME: $AWS_KEY_NAME"
 print_success "DB_PASSWORD: ${DB_PASSWORD:0:3}***${DB_PASSWORD: -3}"
 
+# Debug: Show alert email config
+if [ -n "$ALERT_EMAIL" ]; then
+    print_info "Alert Email: $ALERT_EMAIL"
+    print_info "Alert Password Length: ${#ALERT_EMAIL_PASSWORD} chars"
+fi
+
 # Display HTTPS status
 if [ "$ENABLE_HTTPS" = "true" ] && [ -n "$DOMAIN_NAME" ]; then
     print_success "HTTPS: Enabled for $DOMAIN_NAME"

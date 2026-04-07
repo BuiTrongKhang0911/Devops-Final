@@ -143,6 +143,17 @@ resource "helm_release" "kube_prometheus_stack" {
     value = "10Gi"
   }
 
+  # Disable config reloader to prevent Secret override
+  set {
+    name  = "alertmanager.alertmanagerSpec.configReloaderCPU"
+    value = "0"
+  }
+  
+  set {
+    name  = "alertmanager.alertmanagerSpec.configReloaderMemory"
+    value = "0"
+  }
+
   # =============================================================================
   # NODE EXPORTER (thu thập node metrics)
   # =============================================================================
