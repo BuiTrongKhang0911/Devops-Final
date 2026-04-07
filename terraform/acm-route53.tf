@@ -88,6 +88,21 @@ resource "aws_acm_certificate_validation" "cert" {
 }
 
 # =============================================================================
+# DNS RECORD FOR SONARQUBE (sonar.domain.com)
+# =============================================================================
+resource "aws_route53_record" "sonarqube_dns" {
+  count = local.create_https ? 1 : 0
+
+  zone_id = data.aws_route53_zone.domain[0].zone_id
+  name    = "sonar"
+  type    = "A"
+  ttl     = 300
+  records = [aws_eip.sonarqube_eip.public_ip]
+
+  depends_on = [aws_eip.sonarqube_eip]
+}
+
+# =============================================================================
 # OUTPUTS
 # =============================================================================
 output "https_certificate_arn" {
@@ -113,4 +128,9 @@ output "https_status" {
 output "route53_nameservers" {
   description = "Route53 nameservers (cần cập nhật ở domain registrar)"
   value       = local.create_https ? data.aws_route53_zone.domain[0].name_servers : []
+}
+
+output "sonarqube_url" {
+  description = "SonarQube URL"
+  value = local.create_https ? "https://sonar.${var.domain_name}" : "http://${aws_eip.sonarqube_eip.public_ip}:9000"
 }

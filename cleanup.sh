@@ -181,6 +181,38 @@ EOF
     rm -f /tmp/delete-grafana-cname.json
     echo -e "${GREEN}✅ CNAME record deleted: grafana.devops-midterm.online${NC}"
   fi
+  
+  # Delete A record for sonar
+  echo "  Deleting sonar.devops-midterm.online..."
+  SONAR_IP=$(aws route53 list-resource-record-sets \
+    --hosted-zone-id $HOSTED_ZONE_ID \
+    --query "ResourceRecordSets[?Name=='sonar.devops-midterm.online.' && Type=='A'].ResourceRecords[0].Value" \
+    --output text 2>/dev/null || echo "")
+  
+  if [ -z "$SONAR_IP" ] || [ "$SONAR_IP" == "None" ]; then
+    echo -e "${GREEN}✅ No A record found for sonar${NC}"
+  else
+    cat > /tmp/delete-sonar-a.json <<EOF
+{
+  "Changes": [{
+    "Action": "DELETE",
+    "ResourceRecordSet": {
+      "Name": "sonar.devops-midterm.online",
+      "Type": "A",
+      "TTL": 300,
+      "ResourceRecords": [{"Value": "$SONAR_IP"}]
+    }
+  }]
+}
+EOF
+    
+    aws route53 change-resource-record-sets \
+      --hosted-zone-id $HOSTED_ZONE_ID \
+      --change-batch file:///tmp/delete-sonar-a.json 2>/dev/null || true
+    
+    rm -f /tmp/delete-sonar-a.json
+    echo -e "${GREEN}✅ A record deleted: sonar.devops-midterm.online${NC}"
+  fi
 fi
 
 # =============================================================================
