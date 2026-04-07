@@ -32,6 +32,24 @@ resource "aws_security_group" "sonarqube_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # HTTP - cho Nginx và Certbot validation
+  ingress {
+    description = "HTTP for Nginx/Certbot"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # HTTPS - cho SonarQube qua Nginx
+  ingress {
+    description = "HTTPS for SonarQube"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   # Allow all outbound
   egress {
     description = "Allow all outbound"

@@ -103,3 +103,115 @@
           
           ⚠️  Change password on first login!
           ============================================
+
+    # =========================================================================
+    # NGINX REVERSE PROXY + HTTPS (CERTBOT) - CHỈ KHI ENABLE_HTTPS=true
+    # =========================================================================
+    - name: Install Nginx and Certbot
+      apt:
+        name:
+          - nginx
+          - certbot
+          - python3-certbot-nginx
+        state: present
+        update_cache: yes
+      when: enable_https | default('false') == 'true' and domain_name | default('') != ''
+
+    - name: Remove default Nginx config
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      when: enable_https | default('false') == 'true' and domain_name | default('') != ''
+
+    - name: Create Nginx config for SonarQube (HTTP first for Certbot)
+      copy:
+        dest: /etc/nginx/sites-available/sonarqube
+        content: |
+          server {
+              listen 80;
+              server_name sonar.{{ domain_name }};
+              
+              location / {
+                  proxy_pass http://127.0.0.1:9000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+      when: enable_https | default('false') == 'true' and domain_name | default('') != ''
+      notify: Restart Nginx
+
+    - name: Enable Nginx config
+      file:
+        src: /etc/nginx/sites-available/sonarqube
+        dest: /etc/nginx/sites-enabled/sonarqube
+        state: link
+      when: enable_https | default('false') == 'true' and domain_name | default('') != ''
+      notify: Restart Nginx
+
+    - name: Ensure Nginx is running
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+      when: enable_https | default('false') == 'true' and domain_name | default('') != ''
+
+    - name: Wait for DNS propagation
+      wait_for:
+        timeout: 30
+      when: enable_https | default('false') == 'true' and domain_name | default('') != ''
+
+    - name: Run Certbot to get HTTPS certificate
+      command: >
+        certbot --nginx 
+        -d sonar.{{ domain_name }} 
+        --non-interactive 
+        --agree-tos 
+        -m admin@{{ domain_name }}
+        --redirect
+      args:
+        creates: /etc/letsencrypt/live/sonar.{{ domain_name }}/fullchain.pem
+      when: enable_https | default('false') == 'true' and domain_name | default('') != ''
+      register: certbot_result
+      ignore_errors: yes
+
+    - name: Display Certbot result
+      debug:
+        msg: |
+          ============================================
+          🔒 HTTPS CONFIGURATION
+          ============================================
+          {% if certbot_result.rc == 0 %}
+          ✅ HTTPS enabled successfully!
+          URL: https://sonar.{{ domain_name }}
+          Certificate: Let's Encrypt (auto-renew enabled)
+          {% else %}
+          ⚠️  Certbot failed. Check:
+          1. DNS record sonar.{{ domain_name }} points to {{ ansible_host }}
+          2. Port 80/443 are open in Security Group
+          3. Run manually: certbot --nginx -d sonar.{{ domain_name }}
+          {% endif %}
+          ============================================
+      when: enable_https | default('false') == 'true' and domain_name | default('') != ''
+
+    - name: Configure SonarQube base URL for HTTPS
+      lineinfile:
+        path: /opt/sonarqube/conf/sonar.properties
+        regexp: '^#?sonar.core.serverBaseURL='
+        line: 'sonar.core.serverBaseURL=https://sonar.{{ domain_name }}'
+        create: yes
+      when: enable_https | default('false') == 'true' and domain_name | default('') != '' and certbot_result.rc == 0
+      notify: Restart SonarQube Container
+
+  handlers:
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+
+    - name: Restart SonarQube Container
+      docker_container:
+        name: sonarqube
+        state: started
+        restart: yes

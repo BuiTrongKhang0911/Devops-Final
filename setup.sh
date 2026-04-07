@@ -312,7 +312,12 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     cd ..
 else
     print_info "Running Ansible playbooks..."
-    ansible-playbook -i inventory/hosts.ini playbooks/site.yml -e "db_password=${DB_PASSWORD}"
+    
+    # Pass variables directly to Ansible via -e flag
+    ansible-playbook -i inventory/hosts.ini playbooks/site.yml \
+      -e "db_password=${DB_PASSWORD}" \
+      -e "enable_https=${ENABLE_HTTPS}" \
+      -e "domain_name=${DOMAIN_NAME}"
     cd ..
 fi
 
@@ -494,6 +499,28 @@ if [ "${kubectl_configured:-true}" = "true" ]; then
     print_success "Kubernetes base resources applied!"
     echo ""
     print_warning "LƯU Ý: Deployments sẽ được apply bởi CD pipeline (cần Docker images)"
+    
+    # =============================================================================
+    # MONITORING ALERTS CONFIGURATION
+    # =============================================================================
+    echo ""
+    print_info "Configuring Prometheus Alert Rules and Alertmanager..."
+    
+    # Apply Alert Rules
+    kubectl apply -f kubernetes/monitoring/alert-rules.yaml
+    
+    # Apply Alertmanager Config
+    kubectl apply -f kubernetes/monitoring/alertmanager-config.yaml
+    
+    # Restart Prometheus to load new rules
+    echo "⏳ Restarting Prometheus to load alert rules..."
+    kubectl rollout restart statefulset prometheus-kube-prometheus-stack-prometheus -n monitoring 2>/dev/null || true
+    
+    # Restart Alertmanager to load new config
+    echo "⏳ Restarting Alertmanager to load config..."
+    kubectl rollout restart statefulset alertmanager-kube-prometheus-stack-alertmanager -n monitoring 2>/dev/null || true
+    
+    print_success "Alert rules and Alertmanager configured!"
 fi
 
 # =============================================================================
@@ -518,7 +545,15 @@ cat << EOF
 🔍 SONARQUBE SERVER:
    - Public IP: ${SONARQUBE_PUBLIC_IP}
    - Private IP: ${SONARQUBE_PRIVATE_IP}
-   - URL: http://${SONARQUBE_PUBLIC_IP}:9000
+EOF
+
+if [ "$ENABLE_HTTPS" = "true" ] && [ -n "$DOMAIN_NAME" ]; then
+echo "   - URL: https://sonar.${DOMAIN_NAME}"
+else
+echo "   - URL: http://${SONARQUBE_PUBLIC_IP}:9000"
+fi
+
+cat << EOF
    - Login: admin / admin
    - SSH: ssh -i ${SSH_KEY_PATH} ubuntu@${SONARQUBE_PUBLIC_IP}
 

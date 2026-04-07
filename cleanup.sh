@@ -36,8 +36,28 @@ echo -e "${GREEN}=============================================${NC}"
 echo ""
 
 # =============================================================================
+# STEP 0: Install kubectl if not present
+# =============================================================================
+if ! command -v kubectl &> /dev/null; then
+  echo -e "${YELLOW}kubectl not found. Installing...${NC}"
+  cd /tmp
+  curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+  chmod +x kubectl
+  sudo mv kubectl /usr/local/bin/
+  cd - > /dev/null
+  echo -e "${GREEN}✅ kubectl installed${NC}"
+fi
+
+# Configure kubectl if not already configured
+if ! kubectl cluster-info &>/dev/null; then
+  echo -e "${YELLOW}Configuring kubectl for EKS cluster...${NC}"
+  aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION 2>/dev/null || true
+fi
+
+# =============================================================================
 # STEP 1: Delete Kubernetes Ingress (triggers ALB deletion)
 # =============================================================================
+echo ""
 echo -e "${YELLOW}=== Step 1: Deleting Kubernetes Ingress ===${NC}"
 
 # Check if kubectl is configured
@@ -160,6 +180,130 @@ EOF
     
     rm -f /tmp/delete-grafana-cname.json
     echo -e "${GREEN}✅ CNAME record deleted: grafana.devops-midterm.online${NC}"
+  fi
+  
+  # Delete A record for sonar
+  echo "  Deleting sonar.devops-midterm.online..."
+  SONAR_IP=$(aws route53 list-resource-record-sets \
+    --hosted-zone-id $HOSTED_ZONE_ID \
+    --query "ResourceRecordSets[?Name=='sonar.devops-midterm.online.' && Type=='A'].ResourceRecords[0].Value" \
+    --output text 2>/dev/null || echo "")
+  
+  if [ -z "$SONAR_IP" ] || [ "$SONAR_IP" == "None" ]; then
+    echo -e "${GREEN}✅ No A record found for sonar${NC}"
+  else
+    cat > /tmp/delete-sonar-a.json <<EOF
+{
+  "Changes": [{
+    "Action": "DELETE",
+    "ResourceRecordSet": {
+      "Name": "sonar.devops-midterm.online",
+      "Type": "A",
+      "TTL": 300,
+      "ResourceRecords": [{"Value": "$SONAR_IP"}]
+    }
+  }]
+}
+EOF
+    
+    aws route53 change-resource-record-sets \
+      --hosted-zone-id $HOSTED_ZONE_ID \
+      --change-batch file:///tmp/delete-sonar-a.json 2>/dev/null || true
+    
+    rm -f /tmp/delete-sonar-a.json
+    echo -e "${GREEN}✅ A record deleted: sonar.devops-midterm.online${NC}"
+  fi
+fi
+
+# =============================================================================
+# STEP 3.5: Delete ENIs and Security Groups (created by Kubernetes)
+# =============================================================================
+echo ""
+echo -e "${YELLOW}=== Step 3.5: Deleting ENIs and Security Groups ===${NC}"
+
+# Get VPC ID
+VPC_ID=$(aws ec2 describe-vpcs --region $REGION \
+  --filters "Name=tag:Name,Values=devops-final-vpc" \
+  --query "Vpcs[0].VpcId" --output text 2>/dev/null || echo "")
+
+if [ -z "$VPC_ID" ] || [ "$VPC_ID" == "None" ]; then
+  echo -e "${YELLOW}⚠️  VPC not found, skipping ENI/SG cleanup${NC}"
+else
+  echo "Found VPC: $VPC_ID"
+  
+  # Delete ENIs created by Kubernetes (ALB, EBS CSI, VPC CNI)
+  echo "Finding ENIs in VPC..."
+  ENI_IDS=$(aws ec2 describe-network-interfaces --region $REGION \
+    --filters "Name=vpc-id,Values=$VPC_ID" \
+    --query "NetworkInterfaces[?contains(Description, 'ELB') || contains(Description, 'aws-k8s') || contains(Description, 'Amazon EKS')].NetworkInterfaceId" \
+    --output text 2>/dev/null || echo "")
+  
+  if [ -z "$ENI_IDS" ]; then
+    echo -e "${GREEN}✅ No Kubernetes ENIs found${NC}"
+  else
+    for ENI_ID in $ENI_IDS; do
+      echo "  Processing ENI: $ENI_ID"
+      
+      # Check if ENI is attached
+      ATTACHMENT_ID=$(aws ec2 describe-network-interfaces --region $REGION \
+        --network-interface-ids $ENI_ID \
+        --query "NetworkInterfaces[0].Attachment.AttachmentId" \
+        --output text 2>/dev/null || echo "")
+      
+      if [ ! -z "$ATTACHMENT_ID" ] && [ "$ATTACHMENT_ID" != "None" ]; then
+        echo "    Detaching ENI..."
+        aws ec2 detach-network-interface --region $REGION \
+          --attachment-id $ATTACHMENT_ID --force 2>/dev/null || true
+        sleep 5
+      fi
+      
+      echo "    Deleting ENI..."
+      aws ec2 delete-network-interface --region $REGION \
+        --network-interface-id $ENI_ID 2>/dev/null || true
+    done
+    echo -e "${GREEN}✅ ENIs deleted${NC}"
+    sleep 10
+  fi
+  
+  # Delete Security Groups created by Kubernetes (has tag elbv2.k8s.aws/cluster)
+  echo "Finding Security Groups created by Kubernetes..."
+  SG_IDS=$(aws ec2 describe-security-groups --region $REGION \
+    --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag-key,Values=elbv2.k8s.aws/cluster" \
+    --query "SecurityGroups[].GroupId" --output text 2>/dev/null || echo "")
+  
+  if [ -z "$SG_IDS" ]; then
+    echo -e "${GREEN}✅ No Kubernetes Security Groups found${NC}"
+  else
+    for SG_ID in $SG_IDS; do
+      echo "  Deleting Security Group: $SG_ID"
+      
+      # Remove all ingress rules first
+      aws ec2 describe-security-groups --region $REGION --group-ids $SG_ID \
+        --query "SecurityGroups[0].IpPermissions" --output json > /tmp/sg-ingress-$SG_ID.json 2>/dev/null || true
+      
+      if [ -s /tmp/sg-ingress-$SG_ID.json ] && [ "$(cat /tmp/sg-ingress-$SG_ID.json)" != "[]" ]; then
+        aws ec2 revoke-security-group-ingress --region $REGION \
+          --group-id $SG_ID \
+          --ip-permissions file:///tmp/sg-ingress-$SG_ID.json 2>/dev/null || true
+      fi
+      rm -f /tmp/sg-ingress-$SG_ID.json
+      
+      # Remove all egress rules
+      aws ec2 describe-security-groups --region $REGION --group-ids $SG_ID \
+        --query "SecurityGroups[0].IpPermissionsEgress" --output json > /tmp/sg-egress-$SG_ID.json 2>/dev/null || true
+      
+      if [ -s /tmp/sg-egress-$SG_ID.json ] && [ "$(cat /tmp/sg-egress-$SG_ID.json)" != "[]" ]; then
+        aws ec2 revoke-security-group-egress --region $REGION \
+          --group-id $SG_ID \
+          --ip-permissions file:///tmp/sg-egress-$SG_ID.json 2>/dev/null || true
+      fi
+      rm -f /tmp/sg-egress-$SG_ID.json
+      
+      # Delete the security group
+      aws ec2 delete-security-group --region $REGION --group-id $SG_ID 2>/dev/null || true
+    done
+    echo -e "${GREEN}✅ Security Groups deleted${NC}"
+    sleep 5
   fi
 fi
 

@@ -84,11 +84,6 @@ output "sonarqube_instance_id" {
   value       = aws_instance.sonarqube.id
 }
 
-output "sonarqube_url" {
-  description = "URL truy cập SonarQube Web UI"
-  value       = "http://${aws_eip.sonarqube_eip.public_ip}:9000"
-}
-
 # ==========================================
 # DATABASE + NFS SERVER
 # ==========================================
