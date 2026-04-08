@@ -191,6 +191,36 @@ EOF
     echo "    No record found"
   fi
   
+  # Delete CNAME for staging
+  echo "  Deleting staging.${DOMAIN_NAME}..."
+  STAGING_CNAME=$(aws route53 list-resource-record-sets \
+    --hosted-zone-id $HOSTED_ZONE_ID \
+    --query "ResourceRecordSets[?Name=='staging.${DOMAIN_NAME}.' && Type=='CNAME'].ResourceRecords[0].Value" \
+    --output text 2>/dev/null || echo "")
+  
+  if [ ! -z "$STAGING_CNAME" ] && [ "$STAGING_CNAME" != "None" ]; then
+    cat > /tmp/delete-staging-cname.json <<EOF
+{
+  "Changes": [{
+    "Action": "DELETE",
+    "ResourceRecordSet": {
+      "Name": "staging.${DOMAIN_NAME}",
+      "Type": "CNAME",
+      "TTL": 300,
+      "ResourceRecords": [{"Value": "$STAGING_CNAME"}]
+    }
+  }]
+}
+EOF
+    aws route53 change-resource-record-sets \
+      --hosted-zone-id $HOSTED_ZONE_ID \
+      --change-batch file:///tmp/delete-staging-cname.json 2>/dev/null || true
+    rm -f /tmp/delete-staging-cname.json
+    echo -e "${GREEN}    ✅ Deleted${NC}"
+  else
+    echo "    No record found"
+  fi
+  
   # Delete A record for sonar
   echo "  Deleting sonar.${DOMAIN_NAME}..."
   SONAR_IP=$(aws route53 list-resource-record-sets \
@@ -225,10 +255,10 @@ EOF
 fi
 
 # =============================================================================
-# STEP 4: Delete ALL ENIs (Elastic Network Interfaces)
+# STEP 4: Delete ALL ENIs (Elastic Network Interfaces) - AGGRESSIVE
 # =============================================================================
 echo ""
-echo -e "${YELLOW}=== Step 4: Deleting ALL Kubernetes ENIs ===${NC}"
+echo -e "${YELLOW}=== Step 4: Deleting ALL ENIs (Aggressive Mode) ===${NC}"
 
 VPC_ID=$(aws ec2 describe-vpcs --region $REGION \
   --filters "Name=tag:Name,Values=devops-final-vpc" \
@@ -239,40 +269,83 @@ if [ -z "$VPC_ID" ] || [ "$VPC_ID" == "None" ]; then
 else
   echo "Found VPC: $VPC_ID"
   
-  # Find ALL Kubernetes-related ENIs
-  echo "🔍 Finding Kubernetes ENIs..."
-  ENI_IDS=$(aws ec2 describe-network-interfaces --region $REGION \
+  # ROUND 1: Find and delete ALL ENIs in VPC
+  echo "🔍 Round 1: Finding ALL ENIs in VPC..."
+  ALL_ENI_IDS=$(aws ec2 describe-network-interfaces --region $REGION \
     --filters "Name=vpc-id,Values=$VPC_ID" \
-    --query "NetworkInterfaces[?contains(Description, 'ELB') || contains(Description, 'aws-k8s') || contains(Description, 'aws-K8S') || contains(Description, 'Amazon EKS')].NetworkInterfaceId" \
+    --query "NetworkInterfaces[].NetworkInterfaceId" \
     --output text 2>/dev/null || echo "")
   
-  if [ -z "$ENI_IDS" ]; then
-    echo -e "${GREEN}✅ No Kubernetes ENIs found${NC}"
+  if [ -z "$ALL_ENI_IDS" ]; then
+    echo -e "${GREEN}✅ No ENIs found${NC}"
   else
-    echo "Found ENIs: $ENI_IDS"
-    for ENI_ID in $ENI_IDS; do
-      echo "  Processing: $ENI_ID"
+    echo "Found ENIs: $(echo $ALL_ENI_IDS | wc -w) total"
+    for ENI_ID in $ALL_ENI_IDS; do
+      ENI_DESC=$(aws ec2 describe-network-interfaces --region $REGION \
+        --network-interface-ids $ENI_ID \
+        --query "NetworkInterfaces[0].Description" \
+        --output text 2>/dev/null || echo "unknown")
       
-      # Detach if attached
+      echo "  Processing: $ENI_ID ($ENI_DESC)"
+      
+      # Force detach if attached
       ATTACHMENT_ID=$(aws ec2 describe-network-interfaces --region $REGION \
         --network-interface-ids $ENI_ID \
         --query "NetworkInterfaces[0].Attachment.AttachmentId" \
         --output text 2>/dev/null || echo "")
       
       if [ ! -z "$ATTACHMENT_ID" ] && [ "$ATTACHMENT_ID" != "None" ]; then
-        echo "    Detaching..."
+        echo "    Force detaching..."
         aws ec2 detach-network-interface --region $REGION \
           --attachment-id $ATTACHMENT_ID --force 2>/dev/null || true
         sleep 3
       fi
       
+      # Delete ENI
       echo "    Deleting..."
       aws ec2 delete-network-interface --region $REGION \
-        --network-interface-id $ENI_ID 2>/dev/null || true
+        --network-interface-id $ENI_ID 2>/dev/null && {
+        echo -e "${GREEN}    ✅ Deleted${NC}"
+      } || {
+        echo -e "${YELLOW}    ⚠️  Failed (will retry)${NC}"
+      }
     done
-    echo -e "${GREEN}✅ ENIs deleted${NC}"
-    echo "⏳ Waiting 15 seconds for propagation..."
-    sleep 15
+    
+    echo "⏳ Waiting 20 seconds for ENI deletion..."
+    sleep 20
+    
+    # ROUND 2: Retry failed ENIs
+    echo "🔄 Round 2: Retrying remaining ENIs..."
+    REMAINING_ENIS=$(aws ec2 describe-network-interfaces --region $REGION \
+      --filters "Name=vpc-id,Values=$VPC_ID" \
+      --query "NetworkInterfaces[].NetworkInterfaceId" \
+      --output text 2>/dev/null || echo "")
+    
+    if [ ! -z "$REMAINING_ENIS" ]; then
+      echo "Found $(echo $REMAINING_ENIS | wc -w) remaining ENIs"
+      for ENI_ID in $REMAINING_ENIS; do
+        echo "  Retry: $ENI_ID"
+        # Try detach again
+        ATTACHMENT_ID=$(aws ec2 describe-network-interfaces --region $REGION \
+          --network-interface-ids $ENI_ID \
+          --query "NetworkInterfaces[0].Attachment.AttachmentId" \
+          --output text 2>/dev/null || echo "")
+        
+        if [ ! -z "$ATTACHMENT_ID" ] && [ "$ATTACHMENT_ID" != "None" ]; then
+          aws ec2 detach-network-interface --region $REGION \
+            --attachment-id $ATTACHMENT_ID --force 2>/dev/null || true
+          sleep 5
+        fi
+        
+        aws ec2 delete-network-interface --region $REGION \
+          --network-interface-id $ENI_ID 2>/dev/null || true
+      done
+      
+      echo "⏳ Waiting 30 seconds for final ENI cleanup..."
+      sleep 30
+    fi
+    
+    echo -e "${GREEN}✅ ENI cleanup completed${NC}"
   fi
 fi
 
@@ -360,18 +433,33 @@ if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
       fi
     done
     
-    # Final retry for stubborn SGs
-    echo "🔄 Retrying deletion after 10 seconds..."
-    sleep 10
-    for SG_ID in $ALL_SG_IDS; do
+    # Final retry for stubborn SGs with more aggressive approach
+    echo "🔄 Final retry - deleting all non-default SGs..."
+    sleep 15
+    
+    # Get fresh list of SGs
+    REMAINING_SGS=$(aws ec2 describe-security-groups --region $REGION \
+      --filters "Name=vpc-id,Values=$VPC_ID" \
+      --query "SecurityGroups[?GroupName!='default'].GroupId" \
+      --output text 2>/dev/null || echo "")
+    
+    for SG_ID in $REMAINING_SGS; do
       SG_NAME=$(aws ec2 describe-security-groups --region $REGION --group-ids $SG_ID \
         --query "SecurityGroups[0].GroupName" --output text 2>/dev/null || echo "")
-      if [[ "$SG_NAME" == k8s-traffic-* ]] || [[ "$SG_NAME" == *-alb-* ]]; then
-        aws ec2 delete-security-group --region $REGION --group-id $SG_ID 2>/dev/null || true
+      
+      # Try to delete any non-default SG
+      if [ "$SG_NAME" != "default" ]; then
+        echo "  Attempting to delete: $SG_ID ($SG_NAME)"
+        aws ec2 delete-security-group --region $REGION --group-id $SG_ID 2>/dev/null && {
+          echo -e "${GREEN}    ✅ Deleted${NC}"
+        } || {
+          echo -e "${YELLOW}    ⚠️  Still has dependencies (Terraform will handle)${NC}"
+        }
       fi
     done
     
-    echo -e "${GREEN}✅ Kubernetes Security Groups cleanup completed${NC}"
+    echo -e "${GREEN}✅ Security Groups cleanup completed${NC}"
+    echo -e "${CYAN}Note: Remaining SGs will be deleted by Terraform${NC}"
   fi
 fi
 
