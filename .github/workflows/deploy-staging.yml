@@ -150,11 +150,8 @@ jobs:
             sed "s|PLACEHOLDER_NFS_SERVER|${{ steps.get_ips.outputs.db_ip }}|g" | \
             kubectl apply -f -
 
-      - name: Apply Secrets
-        run: |
-          cat kubernetes/staging/secrets.yaml | \
-            sed "s|PLACEHOLDER_DB_PASSWORD|${{ secrets.DB_PASSWORD }}|g" | \
-            kubectl apply -f -
+      # Note: Secrets đã được tạo bởi setup.sh, không cần apply lại
+      # Giống như production, Secret chỉ tạo 1 lần khi setup infrastructure
 
       - name: Apply NFS PersistentVolume
         run: |
