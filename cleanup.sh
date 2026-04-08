@@ -255,105 +255,15 @@ EOF
 fi
 
 # =============================================================================
-# STEP 4: Delete ALL ENIs (Elastic Network Interfaces) - AGGRESSIVE
+# STEP 4: Delete ALL Security Groups
 # =============================================================================
 echo ""
-echo -e "${YELLOW}=== Step 4: Deleting ALL ENIs (Aggressive Mode) ===${NC}"
+echo -e "${YELLOW}=== Step 4: Deleting ALL Kubernetes Security Groups ===${NC}"
 
+# Get VPC ID
 VPC_ID=$(aws ec2 describe-vpcs --region $REGION \
   --filters "Name=tag:Name,Values=devops-final-vpc" \
   --query "Vpcs[0].VpcId" --output text 2>/dev/null || echo "")
-
-if [ -z "$VPC_ID" ] || [ "$VPC_ID" == "None" ]; then
-  echo -e "${YELLOW}⚠️  VPC not found${NC}"
-else
-  echo "Found VPC: $VPC_ID"
-  
-  # ROUND 1: Find and delete ALL ENIs in VPC
-  echo "🔍 Round 1: Finding ALL ENIs in VPC..."
-  ALL_ENI_IDS=$(aws ec2 describe-network-interfaces --region $REGION \
-    --filters "Name=vpc-id,Values=$VPC_ID" \
-    --query "NetworkInterfaces[].NetworkInterfaceId" \
-    --output text 2>/dev/null || echo "")
-  
-  if [ -z "$ALL_ENI_IDS" ]; then
-    echo -e "${GREEN}✅ No ENIs found${NC}"
-  else
-    echo "Found ENIs: $(echo $ALL_ENI_IDS | wc -w) total"
-    for ENI_ID in $ALL_ENI_IDS; do
-      ENI_DESC=$(aws ec2 describe-network-interfaces --region $REGION \
-        --network-interface-ids $ENI_ID \
-        --query "NetworkInterfaces[0].Description" \
-        --output text 2>/dev/null || echo "unknown")
-      
-      echo "  Processing: $ENI_ID ($ENI_DESC)"
-      
-      # Force detach if attached
-      ATTACHMENT_ID=$(aws ec2 describe-network-interfaces --region $REGION \
-        --network-interface-ids $ENI_ID \
-        --query "NetworkInterfaces[0].Attachment.AttachmentId" \
-        --output text 2>/dev/null || echo "")
-      
-      if [ ! -z "$ATTACHMENT_ID" ] && [ "$ATTACHMENT_ID" != "None" ]; then
-        echo "    Force detaching..."
-        aws ec2 detach-network-interface --region $REGION \
-          --attachment-id $ATTACHMENT_ID --force 2>/dev/null || true
-        sleep 3
-      fi
-      
-      # Delete ENI
-      echo "    Deleting..."
-      aws ec2 delete-network-interface --region $REGION \
-        --network-interface-id $ENI_ID 2>/dev/null && {
-        echo -e "${GREEN}    ✅ Deleted${NC}"
-      } || {
-        echo -e "${YELLOW}    ⚠️  Failed (will retry)${NC}"
-      }
-    done
-    
-    echo "⏳ Waiting 20 seconds for ENI deletion..."
-    sleep 20
-    
-    # ROUND 2: Retry failed ENIs
-    echo "🔄 Round 2: Retrying remaining ENIs..."
-    REMAINING_ENIS=$(aws ec2 describe-network-interfaces --region $REGION \
-      --filters "Name=vpc-id,Values=$VPC_ID" \
-      --query "NetworkInterfaces[].NetworkInterfaceId" \
-      --output text 2>/dev/null || echo "")
-    
-    if [ ! -z "$REMAINING_ENIS" ]; then
-      echo "Found $(echo $REMAINING_ENIS | wc -w) remaining ENIs"
-      for ENI_ID in $REMAINING_ENIS; do
-        echo "  Retry: $ENI_ID"
-        # Try detach again
-        ATTACHMENT_ID=$(aws ec2 describe-network-interfaces --region $REGION \
-          --network-interface-ids $ENI_ID \
-          --query "NetworkInterfaces[0].Attachment.AttachmentId" \
-          --output text 2>/dev/null || echo "")
-        
-        if [ ! -z "$ATTACHMENT_ID" ] && [ "$ATTACHMENT_ID" != "None" ]; then
-          aws ec2 detach-network-interface --region $REGION \
-            --attachment-id $ATTACHMENT_ID --force 2>/dev/null || true
-          sleep 5
-        fi
-        
-        aws ec2 delete-network-interface --region $REGION \
-          --network-interface-id $ENI_ID 2>/dev/null || true
-      done
-      
-      echo "⏳ Waiting 30 seconds for final ENI cleanup..."
-      sleep 30
-    fi
-    
-    echo -e "${GREEN}✅ ENI cleanup completed${NC}"
-  fi
-fi
-
-# =============================================================================
-# STEP 5: Delete ALL Kubernetes Security Groups
-# =============================================================================
-echo ""
-echo -e "${YELLOW}=== Step 5: Deleting ALL Kubernetes Security Groups ===${NC}"
 
 if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
   # Find ALL non-default, non-Terraform Security Groups
@@ -464,10 +374,10 @@ if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
 fi
 
 # =============================================================================
-# STEP 6: Terraform Destroy (clean infrastructure)
+# STEP 5: Terraform Destroy (clean infrastructure)
 # =============================================================================
 echo ""
-echo -e "${YELLOW}=== Step 6: Running Terraform Destroy ===${NC}"
+echo -e "${YELLOW}=== Step 5: Running Terraform Destroy ===${NC}"
 echo ""
 echo -e "${CYAN}All Kubernetes resources have been cleaned up!${NC}"
 echo -e "${CYAN}Now Terraform can safely destroy infrastructure...${NC}"
@@ -502,7 +412,6 @@ echo -e "${CYAN}Summary:${NC}"
 echo "  ✅ Kubernetes resources deleted"
 echo "  ✅ ALBs deleted"
 echo "  ✅ Route53 DNS records deleted"
-echo "  ✅ ENIs deleted"
 echo "  ✅ Kubernetes Security Groups deleted"
 echo "  ✅ Terraform infrastructure destroyed"
 echo ""
