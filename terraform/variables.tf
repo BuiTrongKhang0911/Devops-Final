@@ -131,3 +131,19 @@ variable "enable_https" {
   type        = bool
   default     = false
 }
+
+# ==========================================
+# ALERTMANAGER EMAIL CONFIGURATION
+# ==========================================
+variable "alert_email" {
+  description = "Email dùng để gửi và nhận cảnh báo từ Alertmanager"
+  type        = string
+  default     = ""
+}
+
+variable "alert_email_password" {
+  description = "Gmail App Password (16 ký tự, không có khoảng trắng)"
+  type        = string
+  sensitive   = true  # BẮT BUỘC: Giấu password khỏi log của Terraform
+  default     = ""
+}

@@ -28,6 +28,14 @@ resource "helm_release" "kube_prometheus_stack" {
   wait          = true
   wait_for_jobs = true
 
+  # Nạp file cấu hình Alertmanager và truyền Email/Password vào một cách an toàn
+  values = [
+    templatefile("${path.module}/alertmanager-values.yaml.tpl", {
+      alert_email          = var.alert_email
+      alert_email_password = var.alert_email_password
+    })
+  ]
+
   # =============================================================================
   # PROMETHEUS CONFIGURATION
   # =============================================================================
@@ -141,17 +149,6 @@ resource "helm_release" "kube_prometheus_stack" {
   set {
     name  = "alertmanager.alertmanagerSpec.storage.volumeClaimTemplate.spec.resources.requests.storage"
     value = "10Gi"
-  }
-
-  # Disable config reloader to prevent Secret override
-  set {
-    name  = "alertmanager.alertmanagerSpec.configReloaderCPU"
-    value = "0"
-  }
-  
-  set {
-    name  = "alertmanager.alertmanagerSpec.configReloaderMemory"
-    value = "0"
   }
 
   # =============================================================================

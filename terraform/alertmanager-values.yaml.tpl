@@ -1,19 +1,12 @@
-apiVersion: v1
-kind: Secret
-metadata:
-  name: alertmanager-kube-prometheus-stack-alertmanager
-  namespace: monitoring
-type: Opaque
-stringData:
-  alertmanager.yaml: |-
+alertmanager:
+  config:
     global:
       resolve_timeout: 5m
       smtp_smarthost: 'smtp.gmail.com:587'
-      smtp_from: 'PLACEHOLDER_ALERT_EMAIL'
-      smtp_auth_username: 'PLACEHOLDER_ALERT_EMAIL'
-      smtp_auth_password: 'PLACEHOLDER_ALERT_EMAIL_PASSWORD'
+      smtp_from: '${alert_email}'
+      smtp_auth_username: '${alert_email}'
+      smtp_auth_password: '${alert_email_password}'
       smtp_require_tls: true
-    
     route:
       group_by: ['alertname', 'cluster', 'service']
       group_wait: 10s
@@ -22,44 +15,35 @@ stringData:
       receiver: 'email-receiver'
       routes:
         - matchers:
-            - severity = "critical"
+            - 'severity="critical"'
           receiver: 'critical-email'
           continue: true
         - matchers:
-            - severity = "warning"
+            - 'severity="warning"'
           receiver: 'warning-email'
           continue: true
-    
     receivers:
       - name: 'email-receiver'
         email_configs:
-          - to: 'PLACEHOLDER_ALERT_EMAIL'
+          - to: '${alert_email}'
             send_resolved: true
             headers:
               Subject: '[Alertmanager] {{ .GroupLabels.alertname }}'
-      
       - name: 'critical-email'
         email_configs:
-          - to: 'PLACEHOLDER_ALERT_EMAIL'
+          - to: '${alert_email}'
             send_resolved: true
             headers:
               Subject: '[CRITICAL] {{ .GroupLabels.alertname }}'
-      
       - name: 'warning-email'
         email_configs:
-          - to: 'PLACEHOLDER_ALERT_EMAIL'
+          - to: '${alert_email}'
             send_resolved: true
             headers:
               Subject: '[WARNING] {{ .GroupLabels.alertname }}'
-    
     inhibit_rules:
       - source_matchers:
-          - severity = "critical"
+          - 'severity="critical"'
         target_matchers:
-          - severity = "warning"
+          - 'severity="warning"'
         equal: ['alertname', 'instance']
-
-
-
-
-

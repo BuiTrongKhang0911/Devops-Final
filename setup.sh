@@ -204,6 +204,8 @@ terraform plan \
   -var="key_name=$AWS_KEY_NAME" \
   -var="domain_name=$DOMAIN_NAME" \
   -var="enable_https=$ENABLE_HTTPS" \
+  -var="alert_email=$ALERT_EMAIL" \
+  -var="alert_email_password=$ALERT_EMAIL_PASSWORD" \
   -out=tfplan
 
 echo ""
@@ -519,38 +521,24 @@ if [ "${kubectl_configured:-true}" = "true" ]; then
     # MONITORING ALERTS CONFIGURATION
     # =============================================================================
     echo ""
-    print_info "Configuring Prometheus Alert Rules and Alertmanager..."
+    print_info "Configuring Prometheus Alert Rules..."
     
     # Apply Alert Rules
     kubectl apply -f kubernetes/monitoring/alert-rules.yaml
     
-    # Apply Alertmanager Config with email placeholders replaced
+    # Note: Alertmanager email config is handled by Terraform via alertmanager-values.yaml.tpl
     if [ -n "$ALERT_EMAIL" ] && [ -n "$ALERT_EMAIL_PASSWORD" ]; then
-        print_info "Configuring Alertmanager with email notifications..."
-        cat kubernetes/monitoring/alertmanager-config.yaml | \
-          sed "s|PLACEHOLDER_ALERT_EMAIL|${ALERT_EMAIL}|g" | \
-          sed "s|PLACEHOLDER_ALERT_EMAIL_PASSWORD|${ALERT_EMAIL_PASSWORD}|g" | \
-          kubectl apply -f -
-        print_success "Email notifications enabled: $ALERT_EMAIL"
+        print_success "Email notifications configured via Terraform: $ALERT_EMAIL"
     else
-        print_warning "Email notifications disabled (ALERT_EMAIL not set)"
+        print_warning "Email notifications not configured (ALERT_EMAIL not set in Terraform)"
         print_info "Alerts will only show in Prometheus/Grafana UI"
-        # Apply with dummy values (alerts still work, just no email)
-        cat kubernetes/monitoring/alertmanager-config.yaml | \
-          sed "s|PLACEHOLDER_ALERT_EMAIL|noreply@example.com|g" | \
-          sed "s|PLACEHOLDER_ALERT_EMAIL_PASSWORD|dummy|g" | \
-          kubectl apply -f -
     fi
     
     # Restart Prometheus to load new rules
     echo "⏳ Restarting Prometheus to load alert rules..."
     kubectl rollout restart statefulset prometheus-kube-prometheus-stack-prometheus -n monitoring 2>/dev/null || true
     
-    # Restart Alertmanager to load new config
-    echo "⏳ Restarting Alertmanager to load config..."
-    kubectl rollout restart statefulset alertmanager-kube-prometheus-stack-alertmanager -n monitoring 2>/dev/null || true
-    
-    print_success "Alert rules and Alertmanager configured!"
+    print_success "Alert rules configured!"
 fi
 
 # =============================================================================
