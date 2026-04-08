@@ -129,11 +129,15 @@ jobs:
       - name: Get Infrastructure IPs
         id: get_ips
         run: |
-          # Get DB and NFS server private IP from terraform outputs
-          cd terraform
-          DB_IP=$(terraform output -raw db_nfs_private_ip 2>/dev/null || echo "")
-          if [ -z "$DB_IP" ]; then
-            echo "❌ Cannot get DB/NFS IP from Terraform"
+          # Get DB and NFS server private IP from AWS EC2 tags
+          DB_IP=$(aws ec2 describe-instances \
+            --region ${{ env.AWS_REGION }} \
+            --filters "Name=tag:Name,Values=devops-final-db-nfs" "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].PrivateIpAddress" \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -z "$DB_IP" ] || [ "$DB_IP" == "None" ]; then
+            echo "❌ Cannot get DB/NFS IP from AWS"
             exit 1
           fi
           echo "db_ip=${DB_IP}" >> $GITHUB_OUTPUT
@@ -176,12 +180,13 @@ jobs:
 
       - name: Apply Ingress
         run: |
-          # Get certificate ARN if HTTPS enabled
-          cd terraform
-          CERT_ARN=$(terraform output -raw https_certificate_arn 2>/dev/null || echo "")
-          cd ..
+          # Get certificate ARN from ACM (if exists)
+          CERT_ARN=$(aws acm list-certificates \
+            --region ${{ env.AWS_REGION }} \
+            --query "CertificateSummaryList[?DomainName=='devops-midterm.online'].CertificateArn" \
+            --output text 2>/dev/null || echo "")
           
-          if [ -z "$CERT_ARN" ] || [ "$CERT_ARN" == "N/A" ]; then
+          if [ -z "$CERT_ARN" ] || [ "$CERT_ARN" == "None" ]; then
             echo "⚠️  HTTPS not configured, using HTTP only"
             cat kubernetes/staging/ingress.yaml | \
               sed '/certificate-arn/d' | \
