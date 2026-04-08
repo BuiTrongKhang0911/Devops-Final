@@ -123,6 +123,12 @@
         state: absent
       when: enable_https | default('false') == 'true' and domain_name | default('') != ''
 
+    - name: Check if HTTPS certificate exists
+      stat:
+        path: /etc/letsencrypt/live/sonar.{{ domain_name }}/fullchain.pem
+      register: cert_exists
+      when: enable_https | default('false') == 'true' and domain_name | default('') != ''
+
     - name: Create Nginx config for SonarQube (HTTP first for Certbot)
       copy:
         dest: /etc/nginx/sites-available/sonarqube
@@ -139,7 +145,10 @@
                   proxy_set_header X-Forwarded-Proto $scheme;
               }
           }
-      when: enable_https | default('false') == 'true' and domain_name | default('') != ''
+      when: 
+        - enable_https | default('false') == 'true' 
+        - domain_name | default('') != ''
+        - not cert_exists.stat.exists
       notify: Restart Nginx
 
     - name: Enable Nginx config
