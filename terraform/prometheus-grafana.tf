@@ -28,6 +28,14 @@ resource "helm_release" "kube_prometheus_stack" {
   wait          = true
   wait_for_jobs = true
 
+  # Nạp file cấu hình Alertmanager và truyền Email/Password vào một cách an toàn
+  values = [
+    templatefile("${path.module}/alertmanager-values.yaml.tpl", {
+      alert_email          = var.alert_email
+      alert_email_password = var.alert_email_password
+    })
+  ]
+
   # =============================================================================
   # PROMETHEUS CONFIGURATION
   # =============================================================================

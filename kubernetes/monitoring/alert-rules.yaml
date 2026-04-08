@@ -28,7 +28,7 @@ spec:
         # Alert khi pod không ready
         - alert: PodNotReady
           expr: kube_pod_status_phase{namespace="devops-final", phase!="Running"} == 1
-          for: 5m
+          for: 2m
           labels:
             severity: warning
             component: application
@@ -39,7 +39,7 @@ spec:
         # Alert khi deployment không đủ replicas
         - alert: DeploymentReplicasMismatch
           expr: kube_deployment_spec_replicas{namespace="devops-final"} != kube_deployment_status_replicas_available{namespace="devops-final"}
-          for: 5m
+          for: 2m
           labels:
             severity: warning
             component: application
@@ -56,7 +56,7 @@ spec:
         # Alert khi node CPU cao
         - alert: NodeCPUHigh
           expr: (100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 80
-          for: 5m
+          for: 2m
           labels:
             severity: warning
             component: infrastructure
@@ -67,7 +67,7 @@ spec:
         # Alert khi node memory cao
         - alert: NodeMemoryHigh
           expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
-          for: 5m
+          for: 2m
           labels:
             severity: warning
             component: infrastructure
@@ -78,7 +78,7 @@ spec:
         # Alert khi node disk space thấp
         - alert: NodeDiskSpaceLow
           expr: (1 - (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"})) * 100 > 85
-          for: 5m
+          for: 2m
           labels:
             severity: warning
             component: infrastructure
@@ -95,18 +95,18 @@ spec:
         # Alert khi có pod pending quá lâu
         - alert: PodPendingTooLong
           expr: kube_pod_status_phase{phase="Pending"} == 1
-          for: 10m
+          for: 2m
           labels:
             severity: warning
             component: kubernetes
           annotations:
             summary: "Pod {{ $labels.pod }} pending quá lâu"
-            description: "Pod {{ $labels.pod }} trong namespace {{ $labels.namespace }} đã pending hơn 10 phút."
+            description: "Pod {{ $labels.pod }} trong namespace {{ $labels.namespace }} đã pending hơn 2 phút."
         
         # Alert khi PVC không bound
         - alert: PersistentVolumeClaimPending
           expr: kube_persistentvolumeclaim_status_phase{phase="Pending"} == 1
-          for: 5m
+          for: 2m
           labels:
             severity: warning
             component: kubernetes
