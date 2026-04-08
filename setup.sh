@@ -257,9 +257,53 @@ fi
 cd ..
 
 # =============================================================================
+# CREATE DNS RECORDS (BEFORE ANSIBLE)
+# =============================================================================
+if [ "$ENABLE_HTTPS" = "true" ] && [ -n "$DOMAIN_NAME" ]; then
+    print_header "5. Tạo DNS Records (trước Ansible)"
+    
+    print_info "Getting Hosted Zone ID..."
+    HOSTED_ZONE_ID=$(aws route53 list-hosted-zones \
+      --query "HostedZones[?Name=='${DOMAIN_NAME}.'].Id" \
+      --output text 2>/dev/null | cut -d'/' -f3 || echo "")
+    
+    if [ -z "$HOSTED_ZONE_ID" ] || [ "$HOSTED_ZONE_ID" == "None" ]; then
+        print_warning "Hosted Zone not found. DNS records will not be created."
+        print_info "You may need to create DNS records manually later."
+    else
+        print_success "Hosted Zone ID: $HOSTED_ZONE_ID"
+        
+        # Create A record for SonarQube
+        print_info "Creating DNS record: sonar.${DOMAIN_NAME} -> ${SONARQUBE_PUBLIC_IP}"
+        aws route53 change-resource-record-sets \
+          --hosted-zone-id "$HOSTED_ZONE_ID" \
+          --change-batch "{
+            \"Changes\": [{
+              \"Action\": \"UPSERT\",
+              \"ResourceRecordSet\": {
+                \"Name\": \"sonar.${DOMAIN_NAME}\",
+                \"Type\": \"A\",
+                \"TTL\": 300,
+                \"ResourceRecords\": [{\"Value\": \"${SONARQUBE_PUBLIC_IP}\"}]
+              }
+            }]
+          }" > /dev/null 2>&1 && {
+            print_success "✅ sonar.${DOMAIN_NAME} created"
+        } || {
+            print_warning "⚠️  Failed to create sonar DNS record"
+        }
+        
+        print_info "Waiting 30 seconds for DNS propagation..."
+        sleep 30
+        
+        print_success "DNS records created! Certbot will be able to validate domain."
+    fi
+fi
+
+# =============================================================================
 # GENERATE ANSIBLE INVENTORY
 # =============================================================================
-print_header "5. Tạo Ansible Inventory"
+print_header "6. Tạo Ansible Inventory"
 
 SSH_KEY_ABSOLUTE_PATH="$(pwd)/${SSH_KEY_PATH}"
 
@@ -289,7 +333,7 @@ print_success "Ansible inventory created"
 # =============================================================================
 # WAIT FOR SSH
 # =============================================================================
-print_header "6. Đợi EC2 instances sẵn sàng"
+print_header "7. Đợi EC2 instances sẵn sàng"
 
 print_info "Waiting for SSH to be ready (max 20s per server)..."
 
@@ -314,7 +358,7 @@ done
 # =============================================================================
 # RUN ANSIBLE
 # =============================================================================
-print_header "7. Ansible - Cấu hình Servers"
+print_header "8. Ansible - Cấu hình Servers"
 
 cd ansible
 
@@ -341,7 +385,7 @@ fi
 # =============================================================================
 # KUBERNETES BASE SETUP (Infrastructure)
 # =============================================================================
-print_header "8. Kubernetes - Setup Base Resources"
+print_header "9. Kubernetes - Setup Base Resources"
 
 # Configure kubectl if not already configured
 if ! kubectl cluster-info &>/dev/null; then
@@ -544,7 +588,7 @@ if [ "${kubectl_configured:-true}" = "true" ]; then
     # STAGING ENVIRONMENT SETUP
     # =============================================================================
     echo ""
-    print_header "9. Kubernetes - Setup Staging Environment"
+    print_header "10. Kubernetes - Setup Staging Environment"
     
     print_info "Applying Staging namespace and resources..."
     
