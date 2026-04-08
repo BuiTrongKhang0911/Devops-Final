@@ -1,0 +1,242 @@
+# =============================================================================
+# STAGING DEPLOYMENT - Auto deploy to staging environment
+# =============================================================================
+# Trigger: Push to ANY branch except main
+# Environment: staging namespace
+# =============================================================================
+
+name: Deploy to Staging
+
+on:
+  push:
+    branches-ignore:
+      - 'main'    # Mọi branch trừ main đều deploy vào staging
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  AWS_REGION: ap-southeast-1
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+  NAMESPACE: staging
+
+jobs:
+  # ===========================================================================
+  # BUILD & PUSH DOCKER IMAGES
+  # ===========================================================================
+  build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    
+    outputs:
+      image_tag: ${{ steps.set_tag.outputs.tag }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Image Tag
+        id: set_tag
+        run: |
+          # Use branch name + short SHA for staging
+          BRANCH_NAME=$(echo ${GITHUB_REF#refs/heads/} | sed 's/\//-/g')
+          SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-7)
+          TAG="${BRANCH_NAME}-${SHORT_SHA}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "📦 Image tag: ${TAG}"
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Build Backend JAR
+        working-directory: src/backend
+        run: mvn clean package -DskipTests --batch-mode --no-transfer-progress
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: src/frontend/package-lock.json
+
+      - name: Build Frontend
+        working-directory: src/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and Push Backend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/backend
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/document-management-backend:${{ steps.set_tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and Push Frontend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/frontend
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/document-management-frontend:${{ steps.set_tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # DEPLOY TO STAGING
+  # ===========================================================================
+  deploy:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: staging
+      url: https://staging.devops-midterm.online
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          kubectl version --client
+
+      - name: Create Staging Namespace (if not exists)
+        run: |
+          kubectl apply -f kubernetes/staging/namespace.yaml
+
+      - name: Get Infrastructure IPs
+        id: get_ips
+        run: |
+          # Get DB and NFS server private IP from terraform outputs
+          cd terraform
+          DB_IP=$(terraform output -raw db_nfs_private_ip 2>/dev/null || echo "")
+          if [ -z "$DB_IP" ]; then
+            echo "❌ Cannot get DB/NFS IP from Terraform"
+            exit 1
+          fi
+          echo "db_ip=${DB_IP}" >> $GITHUB_OUTPUT
+          echo "✅ DB/NFS IP: ${DB_IP}"
+
+      - name: Apply ConfigMap
+        run: |
+          cat kubernetes/staging/configmap.yaml | \
+            sed "s|PLACEHOLDER_DB_HOST|${{ steps.get_ips.outputs.db_ip }}|g" | \
+            sed "s|PLACEHOLDER_NFS_SERVER|${{ steps.get_ips.outputs.db_ip }}|g" | \
+            kubectl apply -f -
+
+      - name: Apply Secrets
+        run: |
+          cat kubernetes/staging/secrets.yaml | \
+            sed "s|PLACEHOLDER_DB_PASSWORD|${{ secrets.DB_PASSWORD }}|g" | \
+            kubectl apply -f -
+
+      - name: Apply NFS PersistentVolume
+        run: |
+          cat kubernetes/staging/nfs-pv.yaml | \
+            sed "s|PLACEHOLDER_NFS_SERVER|${{ steps.get_ips.outputs.db_ip }}|g" | \
+            kubectl apply -f -
+
+      - name: Update Deployment Images
+        run: |
+          IMAGE_TAG="${{ needs.build.outputs.image_tag }}"
+          
+          # Update backend deployment
+          cat kubernetes/staging/backend-deployment.yaml | \
+            sed "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" | \
+            sed "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" | \
+            kubectl apply -f -
+          
+          # Update frontend deployment
+          cat kubernetes/staging/frontend-deployment.yaml | \
+            sed "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" | \
+            sed "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" | \
+            kubectl apply -f -
+
+      - name: Apply Ingress
+        run: |
+          # Get certificate ARN if HTTPS enabled
+          cd terraform
+          CERT_ARN=$(terraform output -raw https_certificate_arn 2>/dev/null || echo "")
+          cd ..
+          
+          if [ -z "$CERT_ARN" ] || [ "$CERT_ARN" == "N/A" ]; then
+            echo "⚠️  HTTPS not configured, using HTTP only"
+            cat kubernetes/staging/ingress.yaml | \
+              sed '/certificate-arn/d' | \
+              sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+              sed '/ssl-redirect/d' | \
+              sed "s|PLACEHOLDER_DOMAIN|devops-midterm.online|g" | \
+              kubectl apply -f -
+          else
+            echo "✅ HTTPS enabled with certificate: ${CERT_ARN}"
+            cat kubernetes/staging/ingress.yaml | \
+              sed "s|PLACEHOLDER_CERT_ARN|${CERT_ARN}|g" | \
+              sed "s|PLACEHOLDER_DOMAIN|devops-midterm.online|g" | \
+              kubectl apply -f -
+          fi
+
+      - name: Wait for Deployment
+        run: |
+          echo "⏳ Waiting for deployments to be ready..."
+          kubectl rollout status deployment/backend -n ${{ env.NAMESPACE }} --timeout=5m
+          kubectl rollout status deployment/frontend -n ${{ env.NAMESPACE }} --timeout=5m
+
+      - name: Verify Deployment
+        run: |
+          echo ""
+          echo "============================================="
+          echo "📊 STAGING DEPLOYMENT STATUS"
+          echo "============================================="
+          echo ""
+          echo "🔹 Pods:"
+          kubectl get pods -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "🔹 Services:"
+          kubectl get svc -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "🔹 Ingress:"
+          kubectl get ingress -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "============================================="
+
+      - name: Print Deployment Summary
+        run: |
+          IMAGE_TAG="${{ needs.build.outputs.image_tag }}"
+          BRANCH_NAME=$(echo ${GITHUB_REF#refs/heads/})
+          
+          echo ""
+          echo "============================================="
+          echo "✅ STAGING DEPLOYMENT SUCCESSFUL!"
+          echo "============================================="
+          echo ""
+          echo "🌿 Branch: ${BRANCH_NAME}"
+          echo "🏷️  Image Tag: ${IMAGE_TAG}"
+          echo "📦 Namespace: ${{ env.NAMESPACE }}"
+          echo "🌐 URL: https://staging.devops-midterm.online"
+          echo ""
+          echo "📝 Deployed by: ${{ github.actor }}"
+          echo "⏰ Time: $(date)"
+          echo ""
+          echo "============================================="

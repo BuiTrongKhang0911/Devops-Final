@@ -539,6 +539,91 @@ if [ "${kubectl_configured:-true}" = "true" ]; then
     kubectl rollout restart statefulset prometheus-kube-prometheus-stack-prometheus -n monitoring 2>/dev/null || true
     
     print_success "Alert rules configured!"
+    
+    # =============================================================================
+    # STAGING ENVIRONMENT SETUP
+    # =============================================================================
+    echo ""
+    print_header "9. Kubernetes - Setup Staging Environment"
+    
+    print_info "Applying Staging namespace and resources..."
+    
+    # Apply staging namespace
+    kubectl apply -f kubernetes/staging/namespace.yaml
+    
+    # Apply staging ConfigMap
+    echo "📝 Applying Staging ConfigMap..."
+    cat kubernetes/staging/configmap.yaml | \
+      sed "s|PLACEHOLDER_DB_HOST|${DB_NFS_PRIVATE_IP}|g" | \
+      sed "s|PLACEHOLDER_NFS_SERVER|${DB_NFS_PRIVATE_IP}|g" | \
+      kubectl apply -f -
+    
+    # Apply staging Secrets
+    echo "🔐 Applying Staging Secrets..."
+    cat kubernetes/staging/secrets.yaml | \
+      sed "s|PLACEHOLDER_DB_PASSWORD|${DB_PASSWORD}|g" | \
+      kubectl apply -f -
+    
+    # Apply staging NFS PV
+    echo "💾 Applying Staging NFS PersistentVolume..."
+    cat kubernetes/staging/nfs-pv.yaml | \
+      sed "s|PLACEHOLDER_NFS_SERVER|${DB_NFS_PRIVATE_IP}|g" | \
+      kubectl apply -f -
+    
+    # Wait for staging PVC
+    echo "⏳ Waiting for Staging NFS PVC to be bound..."
+    kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/nfs-uploads-pvc -n staging --timeout=60s || true
+    
+    # Apply staging Ingress
+    echo "🌐 Applying Staging Ingress..."
+    if [ "$ENABLE_HTTPS" = "true" ] && [ -n "$DOMAIN_NAME" ] && [ "$HTTPS_CERT_ARN" != "N/A - HTTPS not enabled" ]; then
+        cat kubernetes/staging/ingress.yaml | \
+          sed "s|PLACEHOLDER_CERT_ARN|${HTTPS_CERT_ARN}|g" | \
+          sed "s|PLACEHOLDER_DOMAIN|${DOMAIN_NAME}|g" | \
+          kubectl apply -f -
+        
+        print_info "Staging HTTPS enabled: staging.${DOMAIN_NAME}"
+        
+        # Create staging DNS record
+        if [ -n "$ALB_URL" ]; then
+            echo "  Creating staging.${DOMAIN_NAME}..."
+            HOSTED_ZONE_ID=$(aws route53 list-hosted-zones --query "HostedZones[?Name=='${DOMAIN_NAME}.'].Id" --output text | cut -d'/' -f3)
+            
+            if [ -n "$HOSTED_ZONE_ID" ]; then
+                aws route53 change-resource-record-sets \
+                  --hosted-zone-id "$HOSTED_ZONE_ID" \
+                  --change-batch "{
+                    \"Changes\": [{
+                      \"Action\": \"UPSERT\",
+                      \"ResourceRecordSet\": {
+                        \"Name\": \"staging.${DOMAIN_NAME}\",
+                        \"Type\": \"CNAME\",
+                        \"TTL\": 300,
+                        \"ResourceRecords\": [{\"Value\": \"${ALB_URL}\"}]
+                      }
+                    }]
+                  }" > /dev/null 2>&1
+                
+                if [ $? -eq 0 ]; then
+                    print_success "CNAME created: staging.${DOMAIN_NAME} -> ${ALB_URL}"
+                else
+                    print_warning "Không thể tạo CNAME cho staging tự động"
+                fi
+            fi
+        fi
+    else
+        cat kubernetes/staging/ingress.yaml | \
+          sed '/certificate-arn/d' | \
+          sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+          sed '/ssl-redirect/d' | \
+          sed "s|PLACEHOLDER_DOMAIN|${DOMAIN_NAME}|g" | \
+          kubectl apply -f -
+        print_info "Staging HTTP-only mode"
+    fi
+    
+    print_success "Staging environment configured!"
+    echo ""
+    print_warning "LƯU Ý: Staging deployments sẽ được apply bởi GitHub Actions khi push code"
 fi
 
 # =============================================================================
