@@ -1,0 +1,32 @@
+# =============================================================================
+# STAGING NFS PERSISTENT VOLUME & CLAIM
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-staging-pv
+  labels:
+    environment: staging
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-staging
+  nfs:
+    server: PLACEHOLDER_NFS_SERVER
+    path: /srv/nfs/staging/uploads
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-uploads-pvc
+  namespace: staging
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-staging
+  resources:
+    requests:
+      storage: 10Gi

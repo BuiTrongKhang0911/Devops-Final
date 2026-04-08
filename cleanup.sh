@@ -25,6 +25,9 @@
 
 set -e
 
+# Disable AWS CLI pager to prevent script from stopping
+export AWS_PAGER=""
+
 REGION="ap-southeast-1"
 CLUSTER_NAME="devops-final-eks"
 DOMAIN_NAME="devops-midterm.online"
@@ -71,11 +74,13 @@ echo -e "${YELLOW}=== Step 1: Deleting Kubernetes Resources ===${NC}"
 
 if kubectl cluster-info &>/dev/null; then
   echo "🗑️  Deleting Ingress resources (triggers ALB deletion)..."
-  kubectl delete ingress --all -n devops-final 2>/dev/null || echo "  No ingress found"
-  kubectl delete ingress --all -n monitoring 2>/dev/null || echo "  No monitoring ingress found"
+  kubectl delete ingress --all -n devops-final 2>/dev/null || echo "  No ingress in devops-final"
+  kubectl delete ingress --all -n staging 2>/dev/null || echo "  No ingress in staging"
+  kubectl delete ingress --all -n monitoring 2>/dev/null || echo "  No ingress in monitoring"
   
   echo "🗑️  Deleting LoadBalancer services..."
-  kubectl delete svc --all -n devops-final 2>/dev/null || echo "  No services found"
+  kubectl delete svc --all -n devops-final 2>/dev/null || echo "  No services in devops-final"
+  kubectl delete svc --all -n staging 2>/dev/null || echo "  No services in staging"
   
   echo -e "${GREEN}✅ Kubernetes resources deleted${NC}"
   echo "⏳ Waiting 60 seconds for ALB deletion to start..."

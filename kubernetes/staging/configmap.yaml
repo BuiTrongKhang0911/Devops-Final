@@ -1,0 +1,23 @@
+# =============================================================================
+# STAGING CONFIGMAP - Environment variables (non-sensitive)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: staging
+data:
+  # Staging Database
+  POSTGRES_DB: "document_db_staging"
+  POSTGRES_USER: "docuser_staging"
+  DB_HOST: "PLACEHOLDER_DB_HOST"
+  
+  # Spring Boot - Connect to staging PostgreSQL
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://PLACEHOLDER_DB_HOST:5432/document_db_staging"
+  SPRING_DATASOURCE_USERNAME: "docuser_staging"
+  SPRING_JPA_HIBERNATE_DDL_AUTO: "update"
+  SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: "org.hibernate.dialect.PostgreSQLDialect"
+  APP_UPLOAD_DIR: "/app/uploads"
+  
+  # NFS Server - Staging folder
+  NFS_SERVER: "PLACEHOLDER_NFS_SERVER"
