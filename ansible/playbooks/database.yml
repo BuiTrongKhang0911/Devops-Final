@@ -12,8 +12,12 @@
 
   vars:
     postgres_version: "16"
+    # Production database
     db_name: "document_db"
     db_user: "docuser"
+    # Staging database
+    db_name_staging: "document_db_staging"
+    db_user_staging: "docuser_staging"
     # Password được truyền từ setup.sh qua -e "db_password=..."
     # Nếu không truyền, dùng giá trị mặc định
     db_password: "{{ db_password | default('SecurePassword123!') }}"
@@ -70,6 +74,41 @@
         objs: public
         privs: ALL
 
+    # =============================================================================
+    # STAGING DATABASE SETUP
+    # =============================================================================
+    - name: Create staging database
+      become_user: postgres
+      postgresql_db:
+        name: "{{ db_name_staging }}"
+        state: present
+
+    - name: Create staging user
+      become_user: postgres
+      postgresql_user:
+        name: "{{ db_user_staging }}"
+        password: "{{ db_password }}"
+        db: "{{ db_name_staging }}"
+        priv: ALL
+        state: present
+
+    - name: Grant all privileges to staging user
+      become_user: postgres
+      postgresql_privs:
+        database: "{{ db_name_staging }}"
+        roles: "{{ db_user_staging }}"
+        type: database
+        privs: ALL
+
+    - name: Grant schema privileges to staging user
+      become_user: postgres
+      postgresql_privs:
+        database: "{{ db_name_staging }}"
+        roles: "{{ db_user_staging }}"
+        type: schema
+        objs: public
+        privs: ALL
+
     - name: Configure PostgreSQL to listen on all interfaces
       lineinfile:
         path: /etc/postgresql/{{ postgres_version }}/main/postgresql.conf
@@ -104,13 +143,19 @@
           💾 POSTGRESQL DATABASE READY!
           ============================================
           Version: {{ db_version.query_result[0].version }}
-          Database: {{ db_name }}
-          User: {{ db_user }}
+          
+          PRODUCTION:
+            Database: {{ db_name }}
+            User: {{ db_user }}
+            Connection: postgresql://{{ db_user }}:***@{{ ansible_default_ipv4.address }}:5432/{{ db_name }}
+          
+          STAGING:
+            Database: {{ db_name_staging }}
+            User: {{ db_user_staging }}
+            Connection: postgresql://{{ db_user_staging }}:***@{{ ansible_default_ipv4.address }}:5432/{{ db_name_staging }}
+          
           Listen: 0.0.0.0:5432
           Private IP: {{ ansible_default_ipv4.address }}
-          
-          Connection string:
-          postgresql://{{ db_user }}:{{ db_password }}@{{ ansible_default_ipv4.address }}:5432/{{ db_name }}
           ============================================
 
   handlers:
