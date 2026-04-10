@@ -5,7 +5,7 @@
 #   1. Đóng gói Backend + Frontend thành Docker images
 #   2. Quét bảo mật với Trivy
 #   3. Đẩy images lên Docker Hub
-# Trigger: Khi code được merge/push vào nhánh main
+# Trigger: Khi code được merge/push vào nhánh main (CHỈ KHI SỬA src/**)
 # CD Pipeline: deploy-cd.yml sẽ tự động chạy sau khi CI thành công
 # =============================================================================
 
@@ -15,6 +15,9 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'src/**'                              # Chỉ chạy khi sửa code app
+      - '.github/workflows/main-ci.yml'       # Hoặc khi sửa chính workflow này
 
 # Ngăn chặn chạy đồng thời nhiều workflow cho cùng branch
 concurrency:

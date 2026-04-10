@@ -468,15 +468,107 @@ jobs:
               kubectl apply -f -
           fi
       
+      - name: Apply Grafana Ingress (with HTTPS config)
+        run: |
+          CERT_ARN=$(jq -r '.https_certificate_arn.value // "N/A"' outputs.json)
+          
+          if [ "$CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ Applying Grafana Ingress with HTTPS"
+            cat kubernetes/monitoring/grafana-ingress.yaml | \
+              sed "s|PLACEHOLDER_CERT_ARN|${CERT_ARN}|g" | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          else
+            echo "⚠️ Applying Grafana Ingress (HTTP-only mode)"
+            cat kubernetes/monitoring/grafana-ingress.yaml | \
+              sed '/certificate-arn/d' | \
+              sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+              sed '/ssl-redirect/d' | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          fi
+      
+      - name: Apply Alert Rules (Monitoring)
+        run: |
+          echo "� Applying Prometheus Alert Rules..."
+          kubectl apply -f kubernetes/monitoring/alert-rules.yaml
+          
+          # Restart Prometheus to load new rules
+          echo "⏳ Restarting Prometheus to load alert rules..."
+          kubectl rollout restart statefulset prometheus-kube-prometheus-stack-prometheus -n monitoring 2>/dev/null || true
+      
+      - name: Apply Staging Namespace
+        run: kubectl apply -f kubernetes/staging/namespace.yaml
+      
+      - name: Apply Staging ConfigMap (with IP substitution)
+        run: |
+          DB_IP=$(jq -r '.db_nfs_private_ip.value' outputs.json)
+          NFS_IP=$(jq -r '.db_nfs_private_ip.value' outputs.json)
+          
+          cat kubernetes/staging/configmap.yaml | \
+            sed "s|PLACEHOLDER_DB_HOST|${DB_IP}|g" | \
+            sed "s|PLACEHOLDER_NFS_SERVER|${NFS_IP}|g" | \
+            kubectl apply -f -
+      
+      - name: Apply Staging Secrets (with password substitution)
+        run: |
+          cat kubernetes/staging/secrets.yaml | \
+            sed "s|PLACEHOLDER_DB_PASSWORD|${{ secrets.DB_PASSWORD }}|g" | \
+            kubectl apply -f -
+      
+      - name: Apply Staging NFS PersistentVolume
+        run: |
+          NFS_IP=$(jq -r '.db_nfs_private_ip.value' outputs.json)
+          
+          cat kubernetes/staging/nfs-pv.yaml | \
+            sed "s|PLACEHOLDER_NFS_SERVER|${NFS_IP}|g" | \
+            kubectl apply -f -
+      
+      - name: Wait for Staging PVC to be Bound
+        run: |
+          kubectl wait --for=jsonpath='{.status.phase}'=Bound \
+            pvc/nfs-uploads-pvc -n staging --timeout=60s || true
+      
+      - name: Apply Staging Ingress (with HTTPS config)
+        run: |
+          CERT_ARN=$(jq -r '.https_certificate_arn.value // "N/A"' outputs.json)
+          
+          if [ "$CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ Applying Staging Ingress with HTTPS"
+            cat kubernetes/staging/ingress.yaml | \
+              sed "s|PLACEHOLDER_CERT_ARN|${CERT_ARN}|g" | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          else
+            echo "⚠️ Applying Staging Ingress (HTTP-only mode)"
+            cat kubernetes/staging/ingress.yaml | \
+              sed '/certificate-arn/d' | \
+              sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+              sed '/ssl-redirect/d' | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          fi
+      
       - name: Verify Resources
         run: |
           echo "📊 Kubernetes Resources Status:"
           echo ""
+          echo "=== PRODUCTION (devops-final) ==="
           kubectl get all -n devops-final
           echo ""
           kubectl get pv,pvc -n devops-final
           echo ""
           kubectl get ingress -n devops-final
+          echo ""
+          echo "=== STAGING ==="
+          kubectl get all -n staging
+          echo ""
+          kubectl get pv,pvc -n staging
+          echo ""
+          kubectl get ingress -n staging
+          echo ""
+          echo "=== MONITORING ==="
+          kubectl get ingress -n monitoring
       
       - name: Wait for ALB Creation and Create DNS Records
         if: ${{ github.event.inputs.action != 'destroy' }}

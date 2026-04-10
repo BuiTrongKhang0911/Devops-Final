@@ -1,7 +1,7 @@
 # =============================================================================
 # STAGING DEPLOYMENT - Auto deploy to staging environment
 # =============================================================================
-# Trigger: Push to ANY branch except main
+# Trigger: Push to ANY branch except main (CHỈ KHI SỬA src/**)
 # Environment: staging namespace
 # =============================================================================
 
@@ -11,6 +11,9 @@ on:
   push:
     branches-ignore:
       - 'main'    # Mọi branch trừ main đều deploy vào staging
+    paths:
+      - 'src/**'                                    # Chỉ chạy khi sửa code app
+      - '.github/workflows/deploy-staging.yml'     # Hoặc khi sửa chính workflow này
   workflow_dispatch:  # Allow manual trigger
 
 env:
