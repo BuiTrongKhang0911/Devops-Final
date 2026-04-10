@@ -46,6 +46,11 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event.inputs.action != 'destroy'
     
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -62,9 +67,9 @@ jobs:
       # Upload results to GitHub Security
       - name: Upload tfsec Results
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: tfsec-results.sarif
+          sarif_file: terraform/tfsec-results.sarif
           category: tfsec
       
       # Scan for secrets
