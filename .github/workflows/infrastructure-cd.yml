@@ -1,0 +1,980 @@
+# =============================================================================
+# INFRASTRUCTURE CI/CD - Terraform + Ansible Automation
+# =============================================================================
+# Purpose: Automate infrastructure provisioning and configuration
+# Trigger: Push to main (terraform/** or ansible/**) or manual dispatch
+# Workflow: Plan → Approve → Apply → Configure → Setup K8s
+# =============================================================================
+
+name: Infrastructure Provisioning & Configuration
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "terraform/**"
+      - "ansible/**"
+      - "kubernetes/**"
+      - ".github/workflows/infrastructure-cd.yml"
+  
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to perform"
+        required: true
+        default: "apply"
+        type: choice
+        options:
+          - apply
+          - destroy
+      
+      confirm_destroy:
+        description: 'Type "DESTROY" to confirm infrastructure deletion'
+        required: false
+        default: ""
+
+env:
+  AWS_REGION: ap-southeast-1
+  TF_VERSION: "1.7"
+
+jobs:
+  # ===========================================================================
+  # JOB 1: SECURITY SCANNING
+  # ===========================================================================
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action != 'destroy'
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      # Scan Terraform for misconfigurations
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          working_directory: terraform
+          soft_fail: false
+          format: sarif
+          output: tfsec-results.sarif
+      
+      # Upload results to GitHub Security
+      - name: Upload tfsec Results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: tfsec-results.sarif
+          category: tfsec
+      
+      # Scan for secrets
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+
+
+  # ===========================================================================
+  # JOB 2: TERRAFORM PLAN
+  # ===========================================================================
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: github.event.inputs.action != 'destroy'
+    
+    outputs:
+      plan_exitcode: ${{ steps.plan.outputs.exitcode }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Configure Backend with Secret
+        working-directory: terraform
+        run: |
+          # Inject TF_BACKEND_BUCKET secret into backend.tf
+          if [ -n "${{ secrets.TF_BACKEND_BUCKET }}" ]; then
+            echo "✅ Using backend bucket from secret: ${{ secrets.TF_BACKEND_BUCKET }}"
+            sed -i 's/devops-final-tfstate-REPLACE_ME/${{ secrets.TF_BACKEND_BUCKET }}/g' backend.tf
+          else
+            echo "⚠️ TF_BACKEND_BUCKET secret not set!"
+            echo "Run ./bootstrap-backend.sh to create backend and get bucket name"
+            echo "Then add it as GitHub Secret: TF_BACKEND_BUCKET"
+            exit 1
+          fi
+      
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+      
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+      
+      - name: Terraform Plan
+        id: plan
+        working-directory: terraform
+        run: |
+          # Check if DOMAIN_NAME is set to determine HTTPS
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            ENABLE_HTTPS="true"
+            echo "✅ HTTPS enabled (DOMAIN_NAME is set)"
+          else
+            ENABLE_HTTPS="false"
+            echo "⚠️ HTTPS disabled (DOMAIN_NAME not set)"
+          fi
+          
+          terraform plan \
+            -out=tfplan \
+            -no-color \
+            -detailed-exitcode \
+            -var="key_name=${{ secrets.AWS_KEY_NAME }}" \
+            -var="domain_name=${{ secrets.DOMAIN_NAME }}" \
+            -var="enable_https=${ENABLE_HTTPS}" \
+            -var="alert_email=${{ secrets.ALERT_EMAIL }}" \
+            -var="alert_email_password=${{ secrets.ALERT_EMAIL_PASSWORD }}" \
+            || export exitcode=$?
+          
+          echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
+          
+          # exitcode 0 = no changes, 1 = error, 2 = changes present
+          if [ $exitcode -eq 1 ]; then
+            exit 1
+          fi
+      
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/tfplan
+          retention-days: 5
+      
+      - name: Comment Plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `#### Terraform Plan 📖
+            
+            **Exitcode:** \`${{ steps.plan.outputs.exitcode }}\`
+            
+            <details><summary>Show Plan</summary>
+            
+            \`\`\`
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+            
+            </details>
+            
+            *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+
+  # ===========================================================================
+  # JOB 3: TERRAFORM APPLY (with Manual Approval)
+  # ===========================================================================
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    if: |
+      github.event.inputs.action != 'destroy' &&
+      needs.terraform-plan.outputs.plan_exitcode == '2'
+    
+    environment:
+      name: production-infrastructure
+      url: https://devops-midterm.online
+    
+    outputs:
+      db_nfs_public_ip: ${{ steps.outputs.outputs.db_nfs_public_ip }}
+      db_nfs_private_ip: ${{ steps.outputs.outputs.db_nfs_private_ip }}
+      sonarqube_public_ip: ${{ steps.outputs.outputs.sonarqube_public_ip }}
+      sonarqube_private_ip: ${{ steps.outputs.outputs.sonarqube_private_ip }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      
+      - name: Configure Backend with Secret
+        working-directory: terraform
+        run: |
+          # Inject TF_BACKEND_BUCKET secret into backend.tf
+          if [ -n "${{ secrets.TF_BACKEND_BUCKET }}" ]; then
+            echo "✅ Using backend bucket from secret: ${{ secrets.TF_BACKEND_BUCKET }}"
+            sed -i 's/devops-final-tfstate-REPLACE_ME/${{ secrets.TF_BACKEND_BUCKET }}/g' backend.tf
+          else
+            echo "⚠️ TF_BACKEND_BUCKET secret not set!"
+            exit 1
+          fi
+      
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+      
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/
+      
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+      
+      - name: Export Terraform Outputs
+        id: outputs
+        working-directory: terraform
+        run: |
+          echo "db_nfs_public_ip=$(terraform output -raw db_nfs_public_ip)" >> $GITHUB_OUTPUT
+          echo "db_nfs_private_ip=$(terraform output -raw db_nfs_private_ip)" >> $GITHUB_OUTPUT
+          echo "sonarqube_public_ip=$(terraform output -raw sonarqube_public_ip)" >> $GITHUB_OUTPUT
+          echo "sonarqube_private_ip=$(terraform output -raw sonarqube_private_ip)" >> $GITHUB_OUTPUT
+          
+          # Export to JSON for next jobs
+          terraform output -json > outputs.json
+      
+      - name: Upload Terraform Outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-outputs
+          path: terraform/outputs.json
+          retention-days: 5
+
+
+  # ===========================================================================
+  # JOB 4: ANSIBLE CONFIGURATION
+  # ===========================================================================
+  ansible-config:
+    name: Ansible Configuration
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ needs.terraform-apply.outputs.db_nfs_public_ip }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ needs.terraform-apply.outputs.sonarqube_public_ip }} >> ~/.ssh/known_hosts
+      
+      - name: Generate Ansible Inventory
+        working-directory: ansible/inventory
+        run: |
+          cat > hosts.ini << EOF
+          # Auto-generated by GitHub Actions at $(date)
+          
+          [sonarqube]
+          sonarqube ansible_host=${{ needs.terraform-apply.outputs.sonarqube_public_ip }} ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
+          
+          [database]
+          db-nfs ansible_host=${{ needs.terraform-apply.outputs.db_nfs_public_ip }} ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
+          
+          [nfs_server]
+          db-nfs ansible_host=${{ needs.terraform-apply.outputs.db_nfs_public_ip }} ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
+          
+          [all:vars]
+          ansible_ssh_private_key_file=~/.ssh/id_rsa
+          ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+          
+          # Private IPs for K8s configuration
+          # DB_PRIVATE_IP=${{ needs.terraform-apply.outputs.db_nfs_private_ip }}
+          # NFS_SERVER_IP=${{ needs.terraform-apply.outputs.db_nfs_private_ip }}
+          EOF
+          
+          cat hosts.ini
+      
+      - name: Wait for SSH (with retry)
+        run: |
+          echo "Waiting for SSH on DB/NFS server..."
+          for i in {1..30}; do
+            if ssh -o ConnectTimeout=5 -i ~/.ssh/id_rsa ubuntu@${{ needs.terraform-apply.outputs.db_nfs_public_ip }} "echo 'SSH Ready'"; then
+              echo "✅ DB/NFS SSH ready!"
+              break
+            fi
+            echo "⏳ Waiting for SSH... ($i/30)"
+            sleep 10
+          done
+          
+          echo "Waiting for SSH on SonarQube server..."
+          for i in {1..30}; do
+            if ssh -o ConnectTimeout=5 -i ~/.ssh/id_rsa ubuntu@${{ needs.terraform-apply.outputs.sonarqube_public_ip }} "echo 'SSH Ready'"; then
+              echo "✅ SonarQube SSH ready!"
+              break
+            fi
+            echo "⏳ Waiting for SSH... ($i/30)"
+            sleep 10
+          done
+      
+      - name: Install Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+      
+      - name: Test Ansible Connectivity
+        working-directory: ansible
+        run: ansible all -i inventory/hosts.ini -m ping
+      
+      - name: Run Ansible Playbook
+        working-directory: ansible
+        run: |
+          # Check if DOMAIN_NAME is set to determine HTTPS
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            ENABLE_HTTPS="true"
+          else
+            ENABLE_HTTPS="false"
+          fi
+          
+          ansible-playbook -i inventory/hosts.ini playbooks/site.yml \
+            -e "db_password=${{ secrets.DB_PASSWORD }}" \
+            -e "enable_https=${ENABLE_HTTPS}" \
+            -e "domain_name=${{ secrets.DOMAIN_NAME }}" \
+            -v
+
+
+  # ===========================================================================
+  # JOB 5: KUBERNETES BASE SETUP
+  # ===========================================================================
+  kubernetes-setup:
+    name: Kubernetes Base Setup
+    runs-on: ubuntu-latest
+    needs: [terraform-apply, ansible-config]
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Download Terraform Outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs
+          path: ./
+      
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+          
+          kubectl version --client
+          kubectl cluster-info
+      
+      - name: Apply Namespace
+        run: kubectl apply -f kubernetes/namespace.yaml
+      
+      - name: Apply ConfigMap (with IP substitution)
+        run: |
+          DB_IP=$(jq -r '.db_nfs_private_ip.value' outputs.json)
+          NFS_IP=$(jq -r '.db_nfs_private_ip.value' outputs.json)
+          
+          cat kubernetes/configmap.yaml | \
+            sed "s|PLACEHOLDER_DB_HOST|${DB_IP}|g" | \
+            sed "s|PLACEHOLDER_NFS_SERVER|${NFS_IP}|g" | \
+            kubectl apply -f -
+      
+      - name: Apply Secrets (with password substitution)
+        run: |
+          cat kubernetes/secrets.yaml | \
+            sed "s|PLACEHOLDER_DB_PASSWORD|${{ secrets.DB_PASSWORD }}|g" | \
+            kubectl apply -f -
+      
+      - name: Apply NFS PersistentVolume
+        run: |
+          NFS_IP=$(jq -r '.db_nfs_private_ip.value' outputs.json)
+          
+          cat kubernetes/nfs-pv.yaml | \
+            sed "s|PLACEHOLDER_NFS_SERVER|${NFS_IP}|g" | \
+            kubectl apply -f -
+      
+      - name: Wait for PVC to be Bound
+        run: |
+          kubectl wait --for=jsonpath='{.status.phase}'=Bound \
+            pvc/nfs-uploads-pvc -n devops-final --timeout=60s || true
+      
+      - name: Apply Services
+        run: |
+          kubectl apply -f kubernetes/base/backend/service.yaml
+          kubectl apply -f kubernetes/base/frontend/service.yaml
+      
+      - name: Apply HPA
+        run: |
+          kubectl apply -f kubernetes/base/backend/hpa.yaml
+          kubectl apply -f kubernetes/base/frontend/hpa.yaml
+      
+      - name: Apply Ingress (with HTTPS config)
+        run: |
+          CERT_ARN=$(jq -r '.https_certificate_arn.value // "N/A"' outputs.json)
+          
+          if [ "$CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ HTTPS enabled"
+            cat kubernetes/ingress.yaml | \
+              sed "s|PLACEHOLDER_CERT_ARN|${CERT_ARN}|g" | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          else
+            echo "⚠️ HTTP-only mode"
+            cat kubernetes/ingress.yaml | \
+              sed '/certificate-arn/d' | \
+              sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+              sed '/ssl-redirect/d' | \
+              kubectl apply -f -
+          fi
+      
+      - name: Verify Resources
+        run: |
+          echo "📊 Kubernetes Resources Status:"
+          echo ""
+          kubectl get all -n devops-final
+          echo ""
+          kubectl get pv,pvc -n devops-final
+          echo ""
+          kubectl get ingress -n devops-final
+      
+      - name: Wait for ALB Creation and Create DNS Records
+        if: secrets.DOMAIN_NAME != ''
+        run: |
+          echo "⏳ Waiting for ALB to be created..."
+          
+          # Wait for ALB (max 5 minutes)
+          ALB_URL=""
+          for i in {1..30}; do
+            ALB_URL=$(kubectl get ingress app-ingress -n devops-final -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [ -n "$ALB_URL" ]; then
+              echo "✅ ALB created: $ALB_URL"
+              break
+            fi
+            echo "Waiting for ALB... ($i/30)"
+            sleep 10
+          done
+          
+          if [ -z "$ALB_URL" ]; then
+            echo "⚠️ ALB not ready yet. DNS records will need to be created manually."
+            exit 0
+          fi
+          
+          # Get Hosted Zone ID
+          HOSTED_ZONE_ID=$(aws route53 list-hosted-zones \
+            --query "HostedZones[?Name=='${{ secrets.DOMAIN_NAME }}.'].Id" \
+            --output text | cut -d'/' -f3)
+          
+          if [ -z "$HOSTED_ZONE_ID" ]; then
+            echo "⚠️ Hosted Zone not found for ${{ secrets.DOMAIN_NAME }}"
+            exit 0
+          fi
+          
+          echo "🌐 Creating DNS records..."
+          
+          # Create A record (Alias) for root domain
+          echo "  Creating ${{ secrets.DOMAIN_NAME }}..."
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id "$HOSTED_ZONE_ID" \
+            --change-batch "{
+              \"Changes\": [{
+                \"Action\": \"UPSERT\",
+                \"ResourceRecordSet\": {
+                  \"Name\": \"${{ secrets.DOMAIN_NAME }}\",
+                  \"Type\": \"A\",
+                  \"AliasTarget\": {
+                    \"HostedZoneId\": \"Z1LMS91P8CMLE5\",
+                    \"DNSName\": \"${ALB_URL}\",
+                    \"EvaluateTargetHealth\": false
+                  }
+                }
+              }]
+            }" && echo "    ✅ Created" || echo "    ⚠️ Failed"
+          
+          # Create CNAME for grafana
+          echo "  Creating grafana.${{ secrets.DOMAIN_NAME }}..."
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id "$HOSTED_ZONE_ID" \
+            --change-batch "{
+              \"Changes\": [{
+                \"Action\": \"UPSERT\",
+                \"ResourceRecordSet\": {
+                  \"Name\": \"grafana.${{ secrets.DOMAIN_NAME }}\",
+                  \"Type\": \"CNAME\",
+                  \"TTL\": 300,
+                  \"ResourceRecords\": [{\"Value\": \"${ALB_URL}\"}]
+                }
+              }]
+            }" && echo "    ✅ Created" || echo "    ⚠️ Failed"
+          
+          # Create CNAME for staging
+          echo "  Creating staging.${{ secrets.DOMAIN_NAME }}..."
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id "$HOSTED_ZONE_ID" \
+            --change-batch "{
+              \"Changes\": [{
+                \"Action\": \"UPSERT\",
+                \"ResourceRecordSet\": {
+                  \"Name\": \"staging.${{ secrets.DOMAIN_NAME }}\",
+                  \"Type\": \"CNAME\",
+                  \"TTL\": 300,
+                  \"ResourceRecords\": [{\"Value\": \"${ALB_URL}\"}]
+                }
+              }]
+            }" && echo "    ✅ Created" || echo "    ⚠️ Failed"
+          
+          # Create A record for SonarQube (sonar subdomain)
+          echo "  Creating sonar.${{ secrets.DOMAIN_NAME }}..."
+          SONARQUBE_IP=$(cat outputs.json | jq -r '.sonarqube_public_ip.value')
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id "$HOSTED_ZONE_ID" \
+            --change-batch "{
+              \"Changes\": [{
+                \"Action\": \"UPSERT\",
+                \"ResourceRecordSet\": {
+                  \"Name\": \"sonar.${{ secrets.DOMAIN_NAME }}\",
+                  \"Type\": \"A\",
+                  \"TTL\": 300,
+                  \"ResourceRecords\": [{\"Value\": \"${SONARQUBE_IP}\"}]
+                }
+              }]
+            }" && echo "    ✅ Created" || echo "    ⚠️ Failed"
+          
+          echo ""
+          echo "✅ DNS records created!"
+          echo "   Access your application at:"
+          echo "   - https://${{ secrets.DOMAIN_NAME }}"
+          echo "   - https://grafana.${{ secrets.DOMAIN_NAME }}"
+          echo "   - https://staging.${{ secrets.DOMAIN_NAME }}"
+          echo "   - https://sonar.${{ secrets.DOMAIN_NAME }}:9000"
+          echo ""
+          echo "⏳ Wait 2-5 minutes for DNS propagation"
+
+
+  # ===========================================================================
+  # JOB 6: TERRAFORM DESTROY (with strict safeguards)
+  # ===========================================================================
+  terraform-destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.action == 'destroy' &&
+      github.event.inputs.confirm_destroy == 'DESTROY'
+    
+    environment:
+      name: production-infrastructure
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }} || true
+      
+      - name: Pre-Destroy Warning
+        run: |
+          echo "⚠️⚠️⚠️ DESTROYING INFRASTRUCTURE ⚠️⚠️⚠️"
+          echo ""
+          echo "This will DELETE:"
+          echo "  - EKS Cluster"
+          echo "  - EC2 Instances"
+          echo "  - VPC and all networking"
+          echo "  - All data and configurations"
+          echo ""
+          echo "Waiting 30 seconds for final cancellation..."
+          sleep 30
+      
+      - name: Cleanup Kubernetes Resources
+        run: |
+          echo "🧹 Step 1: Deleting Kubernetes resources..."
+          
+          if kubectl cluster-info &>/dev/null; then
+            echo "  Deleting Ingress (triggers ALB deletion)..."
+            kubectl delete ingress --all -n devops-final 2>/dev/null || true
+            kubectl delete ingress --all -n staging 2>/dev/null || true
+            kubectl delete ingress --all -n monitoring 2>/dev/null || true
+            
+            echo "  Deleting LoadBalancer services..."
+            kubectl delete svc --all -n devops-final 2>/dev/null || true
+            kubectl delete svc --all -n staging 2>/dev/null || true
+            
+            echo "✅ Kubernetes resources deleted"
+            echo "⏳ Waiting 60 seconds for ALB deletion..."
+            sleep 60
+          else
+            echo "⚠️ kubectl not configured, skipping Kubernetes cleanup"
+          fi
+      
+      - name: Force Delete ALBs
+        run: |
+          echo "🧹 Step 2: Force deleting ALBs..."
+          
+          ALB_ARNS=$(aws elbv2 describe-load-balancers --region ${{ env.AWS_REGION }} \
+            --query "LoadBalancers[].LoadBalancerArn" --output text 2>/dev/null || echo "")
+          
+          if [ -z "$ALB_ARNS" ]; then
+            echo "✅ No ALBs found"
+          else
+            for arn in $ALB_ARNS; do
+              echo "  Deleting: $arn"
+              aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --region ${{ env.AWS_REGION }} 2>/dev/null || true
+            done
+            echo "✅ ALB deletion triggered"
+            echo "⏳ Waiting 120 seconds for ALB cleanup..."
+            sleep 120
+          fi
+      
+      - name: Delete Route53 DNS Records
+        if: secrets.DOMAIN_NAME != ''
+        run: |
+          echo "🧹 Step 3: Deleting Route53 DNS records..."
+          
+          HOSTED_ZONE_ID=$(aws route53 list-hosted-zones \
+            --query "HostedZones[?Name=='${{ secrets.DOMAIN_NAME }}.'].Id" \
+            --output text | cut -d'/' -f3 || echo "")
+          
+          if [ -z "$HOSTED_ZONE_ID" ]; then
+            echo "⚠️ Hosted Zone not found"
+          else
+            echo "Found Hosted Zone: $HOSTED_ZONE_ID"
+            
+            # Delete root domain A record
+            echo "  Deleting ${{ secrets.DOMAIN_NAME }}..."
+            RECORD=$(aws route53 list-resource-record-sets \
+              --hosted-zone-id $HOSTED_ZONE_ID \
+              --query "ResourceRecordSets[?Name=='${{ secrets.DOMAIN_NAME }}.' && Type=='A']" \
+              --output json)
+            
+            if [ "$RECORD" != "[]" ]; then
+              echo "$RECORD" | jq -r '.[0] | {Changes: [{Action: "DELETE", ResourceRecordSet: .}]}' > /tmp/delete-root.json
+              aws route53 change-resource-record-sets \
+                --hosted-zone-id $HOSTED_ZONE_ID \
+                --change-batch file:///tmp/delete-root.json 2>/dev/null || true
+              echo "    ✅ Deleted"
+            fi
+            
+            # Delete grafana CNAME
+            echo "  Deleting grafana.${{ secrets.DOMAIN_NAME }}..."
+            CNAME=$(aws route53 list-resource-record-sets \
+              --hosted-zone-id $HOSTED_ZONE_ID \
+              --query "ResourceRecordSets[?Name=='grafana.${{ secrets.DOMAIN_NAME }}.' && Type=='CNAME']" \
+              --output json)
+            
+            if [ "$CNAME" != "[]" ]; then
+              echo "$CNAME" | jq -r '.[0] | {Changes: [{Action: "DELETE", ResourceRecordSet: .}]}' > /tmp/delete-grafana.json
+              aws route53 change-resource-record-sets \
+                --hosted-zone-id $HOSTED_ZONE_ID \
+                --change-batch file:///tmp/delete-grafana.json 2>/dev/null || true
+              echo "    ✅ Deleted"
+            fi
+            
+            # Delete staging CNAME
+            echo "  Deleting staging.${{ secrets.DOMAIN_NAME }}..."
+            STAGING=$(aws route53 list-resource-record-sets \
+              --hosted-zone-id $HOSTED_ZONE_ID \
+              --query "ResourceRecordSets[?Name=='staging.${{ secrets.DOMAIN_NAME }}.' && Type=='CNAME']" \
+              --output json)
+            
+            if [ "$STAGING" != "[]" ]; then
+              echo "$STAGING" | jq -r '.[0] | {Changes: [{Action: "DELETE", ResourceRecordSet: .}]}' > /tmp/delete-staging.json
+              aws route53 change-resource-record-sets \
+                --hosted-zone-id $HOSTED_ZONE_ID \
+                --change-batch file:///tmp/delete-staging.json 2>/dev/null || true
+              echo "    ✅ Deleted"
+            fi
+            
+            echo "✅ Route53 cleanup completed"
+          fi
+      
+      - name: Cleanup Security Groups
+        run: |
+          echo "🧹 Step 4: Cleaning up Kubernetes Security Groups..."
+          
+          VPC_ID=$(aws ec2 describe-vpcs --region ${{ env.AWS_REGION }} \
+            --filters "Name=tag:Name,Values=devops-final-vpc" \
+            --query "Vpcs[0].VpcId" --output text 2>/dev/null || echo "")
+          
+          if [ -z "$VPC_ID" ] || [ "$VPC_ID" == "None" ]; then
+            echo "⚠️ VPC not found"
+          else
+            echo "Found VPC: $VPC_ID"
+            
+            # Get all non-default SGs
+            SG_IDS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} \
+              --filters "Name=vpc-id,Values=$VPC_ID" \
+              --query "SecurityGroups[?GroupName!='default'].GroupId" \
+              --output text 2>/dev/null || echo "")
+            
+            if [ -z "$SG_IDS" ]; then
+              echo "✅ No Security Groups to clean"
+            else
+              echo "  Removing all rules to break dependencies..."
+              for SG_ID in $SG_IDS; do
+                # Revoke all ingress rules
+                INGRESS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].IpPermissions" --output json 2>/dev/null || echo "[]")
+                
+                if [ "$INGRESS" != "[]" ] && [ "$INGRESS" != "null" ]; then
+                  echo "$INGRESS" > /tmp/ing-$SG_ID.json
+                  aws ec2 revoke-security-group-ingress --region ${{ env.AWS_REGION }} \
+                    --group-id $SG_ID --ip-permissions file:///tmp/ing-$SG_ID.json 2>/dev/null || true
+                  rm -f /tmp/ing-$SG_ID.json
+                fi
+                
+                # Revoke all egress rules
+                EGRESS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].IpPermissionsEgress" --output json 2>/dev/null || echo "[]")
+                
+                if [ "$EGRESS" != "[]" ] && [ "$EGRESS" != "null" ]; then
+                  echo "$EGRESS" > /tmp/eg-$SG_ID.json
+                  aws ec2 revoke-security-group-egress --region ${{ env.AWS_REGION }} \
+                    --group-id $SG_ID --ip-permissions file:///tmp/eg-$SG_ID.json 2>/dev/null || true
+                  rm -f /tmp/eg-$SG_ID.json
+                fi
+              done
+              
+              sleep 10
+              
+              echo "  Deleting Kubernetes Security Groups..."
+              for SG_ID in $SG_IDS; do
+                SG_NAME=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].GroupName" --output text 2>/dev/null || echo "")
+                
+                # Check if it's a Kubernetes SG
+                IS_K8S_SG=false
+                if [[ "$SG_NAME" == k8s-traffic-* ]]; then
+                  IS_K8S_SG=true
+                fi
+                
+                # Check for ALB tag
+                HAS_ALB_TAG=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].Tags[?Key=='elbv2.k8s.aws/cluster'].Value" \
+                  --output text 2>/dev/null || echo "")
+                if [ ! -z "$HAS_ALB_TAG" ]; then
+                  IS_K8S_SG=true
+                fi
+                
+                if [ "$IS_K8S_SG" = true ]; then
+                  echo "    Deleting Kubernetes SG: $SG_ID ($SG_NAME)"
+                  aws ec2 delete-security-group --region ${{ env.AWS_REGION }} --group-id $SG_ID 2>/dev/null && {
+                    echo "      ✅ Deleted"
+                  } || {
+                    echo "      ⚠️ Cannot delete (will retry)"
+                  }
+                else
+                  echo "    Skipping Terraform SG: $SG_ID ($SG_NAME)"
+                fi
+              done
+              
+              # Final retry for stubborn SGs
+              echo "  Final retry - deleting remaining non-default SGs..."
+              sleep 15
+              
+              REMAINING_SGS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} \
+                --filters "Name=vpc-id,Values=$VPC_ID" \
+                --query "SecurityGroups[?GroupName!='default'].GroupId" \
+                --output text 2>/dev/null || echo "")
+              
+              for SG_ID in $REMAINING_SGS; do
+                SG_NAME=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].GroupName" --output text 2>/dev/null || echo "")
+                
+                if [ "$SG_NAME" != "default" ]; then
+                  echo "    Attempting to delete: $SG_ID ($SG_NAME)"
+                  aws ec2 delete-security-group --region ${{ env.AWS_REGION }} --group-id $SG_ID 2>/dev/null && {
+                    echo "      ✅ Deleted"
+                  } || {
+                    echo "      ⚠️ Still has dependencies (Terraform will handle)"
+                  }
+                fi
+              done
+              
+              echo "✅ Security Groups cleanup completed"{{ env.AWS_REGION }} --group-id $SG_ID 2>/dev/null || true
+                fi
+              done
+              
+              echo "✅ Security Groups cleanup completed"
+            fi
+          fi
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Configure Backend with Secret
+        working-directory: terraform
+        run: |
+          # Inject TF_BACKEND_BUCKET secret into backend.tf
+          if [ -n "${{ secrets.TF_BACKEND_BUCKET }}" ]; then
+            echo "✅ Using backend bucket from secret: ${{ secrets.TF_BACKEND_BUCKET }}"
+            sed -i 's/devops-final-tfstate-REPLACE_ME/${{ secrets.TF_BACKEND_BUCKET }}/g' backend.tf
+          else
+            echo "⚠️ TF_BACKEND_BUCKET secret not set!"
+            exit 1
+          fi
+      
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+      
+      - name: Terraform Destroy
+        working-directory: terraform
+        run: |
+          # Check if DOMAIN_NAME is set to determine HTTPS
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            ENABLE_HTTPS="true"
+          else
+            ENABLE_HTTPS="false"
+          fi
+          
+          terraform destroy -auto-approve -no-color \
+            -var="key_name=${{ secrets.AWS_KEY_NAME }}" \
+            -var="domain_name=${{ secrets.DOMAIN_NAME }}" \
+            -var="enable_https=${ENABLE_HTTPS}" \
+            -var="alert_email=${{ secrets.ALERT_EMAIL }}" \
+            -var="alert_email_password=${{ secrets.ALERT_EMAIL_PASSWORD }}"
+      
+      - name: Cleanup S3 Backend Bucket
+        if: secrets.TF_BACKEND_BUCKET != ''
+        run: |
+          echo "🧹 Step 6: Cleaning up Terraform backend (S3 + DynamoDB)..."
+          
+          BUCKET_NAME="${{ secrets.TF_BACKEND_BUCKET }}"
+          
+          # Check if bucket exists
+          if aws s3 ls "s3://${BUCKET_NAME}" 2>/dev/null; then
+            echo "Found S3 bucket: ${BUCKET_NAME}"
+            
+            # Remove all objects and versions
+            echo "  Removing all objects and versions..."
+            aws s3api list-object-versions \
+              --bucket "${BUCKET_NAME}" \
+              --query 'Versions[].{Key:Key,VersionId:VersionId}' \
+              --output json | \
+              jq -r '.[] | "--key \"\(.Key)\" --version-id \"\(.VersionId)\""' | \
+              xargs -I {} aws s3api delete-object --bucket "${BUCKET_NAME}" {} 2>/dev/null || true
+            
+            # Remove delete markers
+            aws s3api list-object-versions \
+              --bucket "${BUCKET_NAME}" \
+              --query 'DeleteMarkers[].{Key:Key,VersionId:VersionId}' \
+              --output json | \
+              jq -r '.[] | "--key \"\(.Key)\" --version-id \"\(.VersionId)\""' | \
+              xargs -I {} aws s3api delete-object --bucket "${BUCKET_NAME}" {} 2>/dev/null || true
+            
+            # Delete bucket
+            echo "  Deleting S3 bucket..."
+            aws s3 rb "s3://${BUCKET_NAME}" --force 2>/dev/null || true
+            echo "✅ S3 bucket deleted"
+          else
+            echo "⚠️ S3 bucket not found or already deleted"
+          fi
+          
+          # Delete DynamoDB table
+          TABLE_NAME="${BUCKET_NAME}-lock"
+          echo "  Deleting DynamoDB table: ${TABLE_NAME}..."
+          aws dynamodb delete-table --table-name "${TABLE_NAME}" --region ${{ env.AWS_REGION }} 2>/dev/null && {
+            echo "✅ DynamoDB table deleted"
+          } || {
+            echo "⚠️ DynamoDB table not found or already deleted"
+          }
+          
+          echo "✅ Terraform backend cleanup completed"
+      
+      - name: Destroy Complete
+        run: |
+          echo ""
+          echo "============================================="
+          echo "✅ INFRASTRUCTURE DESTROYED SUCCESSFULLY"
+          echo "============================================="
+          echo ""
+          echo "Cleaned up:"
+          echo "  ✅ Kubernetes resources (Ingress, Services)"
+          echo "  ✅ ALBs (Application Load Balancers)"
+          echo "  ✅ Route53 DNS records"
+          echo "  ✅ Security Groups (Kubernetes-created)"
+          echo "  ✅ Terraform infrastructure"
+          echo "  ✅ S3 backend bucket"
+          echo "  ✅ DynamoDB state lock table"
+          echo ""
+          echo "⚠️ Remember to:"
+          echo "  1. Check AWS Console for any remaining resources"
+          echo "  2. Verify no unexpected charges"
+          echo "  3. Remove GitHub Secrets if no longer needed"
+          echo ""
+          echo "============================================="
+
+  # ===========================================================================
+  # JOB 7: NOTIFICATION (Success/Failure)
+  # ===========================================================================
+  notify:
+    name: Send Notification
+    runs-on: ubuntu-latest
+    needs: [terraform-apply, ansible-config, kubernetes-setup]
+    if: always()
+    
+    steps:
+      - name: Deployment Summary
+        run: |
+          if [ "${{ needs.terraform-apply.result }}" == "success" ] && \
+             [ "${{ needs.ansible-config.result }}" == "success" ] && \
+             [ "${{ needs.kubernetes-setup.result }}" == "success" ]; then
+            echo "✅ INFRASTRUCTURE DEPLOYMENT SUCCESSFUL!"
+            echo ""
+            echo "🌐 Access your application at:"
+            echo "   https://${{ secrets.DOMAIN_NAME }}"
+            echo ""
+            echo "📊 SonarQube:"
+            echo "   http://${{ needs.terraform-apply.outputs.sonarqube_public_ip }}:9000"
+          else
+            echo "❌ INFRASTRUCTURE DEPLOYMENT FAILED!"
+            echo ""
+            echo "Check the logs above for details."
+          fi
