@@ -69,7 +69,7 @@ jobs:
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: tfsec-results.sarif
+          sarif_file: terraform/tfsec-results.sarif
           category: tfsec
       
       # Scan for secrets
