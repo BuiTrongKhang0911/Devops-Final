@@ -475,8 +475,14 @@ jobs:
           kubectl get ingress -n devops-final
       
       - name: Wait for ALB Creation and Create DNS Records
-        if: ${{ secrets.DOMAIN_NAME != '' }}
+        if: ${{ github.event.inputs.action != 'destroy' }}
         run: |
+          # Skip if DOMAIN_NAME is not set
+          if [ -z "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "⚠️ DOMAIN_NAME not set, skipping DNS record creation"
+            exit 0
+          fi
+          
           echo "⏳ Waiting for ALB to be created..."
           
           # Wait for ALB (max 5 minutes)
@@ -671,8 +677,13 @@ jobs:
           fi
       
       - name: Delete Route53 DNS Records
-        if: ${{ secrets.DOMAIN_NAME != '' }}
         run: |
+          # Skip if DOMAIN_NAME is not set
+          if [ -z "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "⚠️ DOMAIN_NAME not set, skipping DNS cleanup"
+            exit 0
+          fi
+          
           echo "🧹 Step 3: Deleting Route53 DNS records..."
           
           HOSTED_ZONE_ID=$(aws route53 list-hosted-zones \
@@ -882,8 +893,13 @@ jobs:
             -var="alert_email_password=${{ secrets.ALERT_EMAIL_PASSWORD }}"
       
       - name: Cleanup S3 Backend Bucket
-        if: ${{ secrets.TF_BACKEND_BUCKET != '' }}
         run: |
+          # Skip if TF_BACKEND_BUCKET is not set
+          if [ -z "${{ secrets.TF_BACKEND_BUCKET }}" ]; then
+            echo "⚠️ TF_BACKEND_BUCKET not set, skipping S3/DynamoDB cleanup"
+            exit 0
+          fi
+          
           echo "🧹 Step 6: Cleaning up Terraform backend (S3 + DynamoDB)..."
           
           BUCKET_NAME="${{ secrets.TF_BACKEND_BUCKET }}"
