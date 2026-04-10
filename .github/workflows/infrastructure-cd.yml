@@ -78,8 +78,7 @@ jobs:
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
-          base: ${{ github.event.repository.default_branch }}
-          head: HEAD
+          extra_args: --only-verified --no-update
 
 
   # ===========================================================================
@@ -833,6 +832,21 @@ jobs:
               aws route53 change-resource-record-sets \
                 --hosted-zone-id $HOSTED_ZONE_ID \
                 --change-batch file:///tmp/delete-staging.json 2>/dev/null || true
+              echo "    ✅ Deleted"
+            fi
+            
+            # Delete sonar A record
+            echo "  Deleting sonar.${{ secrets.DOMAIN_NAME }}..."
+            SONAR=$(aws route53 list-resource-record-sets \
+              --hosted-zone-id $HOSTED_ZONE_ID \
+              --query "ResourceRecordSets[?Name=='sonar.${{ secrets.DOMAIN_NAME }}.' && Type=='A']" \
+              --output json)
+            
+            if [ "$SONAR" != "[]" ]; then
+              echo "$SONAR" | jq -r '.[0] | {Changes: [{Action: "DELETE", ResourceRecordSet: .}]}' > /tmp/delete-sonar.json
+              aws route53 change-resource-record-sets \
+                --hosted-zone-id $HOSTED_ZONE_ID \
+                --change-batch file:///tmp/delete-sonar.json 2>/dev/null || true
               echo "    ✅ Deleted"
             fi
             

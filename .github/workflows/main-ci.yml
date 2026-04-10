@@ -36,6 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
       - name: Check Infrastructure Workflow Status
         run: |
           echo "🔍 Checking if infrastructure workflow is running..."
