@@ -55,21 +55,26 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
       
-      # Scan Terraform for misconfigurations
-      - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1.0.0
-        with:
-          working_directory: terraform
-          soft_fail: true
-          format: sarif
-          additional_args: --out tfsec-results.sarif
+      # Scan Terraform for misconfigurations (Direct execution)
+      - name: Install and Run tfsec
+        run: |
+          echo "📦 Installing tfsec..."
+          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+          
+          echo "🔍 Running tfsec scan..."
+          # Quét thư mục terraform, xuất ra file SARIF ở thư mục gốc
+          # || true để không fail pipeline nếu có issues (soft_fail)
+          tfsec terraform/ --format sarif --out tfsec-results.sarif || true
+          
+          echo "✅ tfsec scan completed"
+          ls -lh tfsec-results.sarif
       
       # Upload results to GitHub Security
       - name: Upload tfsec Results
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: terraform/tfsec-results.sarif
+          sarif_file: tfsec-results.sarif
           category: tfsec
       
       # Scan for secrets
