@@ -63,8 +63,13 @@ jobs:
           
           echo "🔍 Running tfsec scan..."
           # Quét thư mục terraform, xuất ra file SARIF ở thư mục gốc
+          # --force-all-dirs: Fix URI scheme issue
           # || true để không fail pipeline nếu có issues (soft_fail)
-          tfsec terraform/ --format sarif --out tfsec-results.sarif || true
+          tfsec terraform/ \
+            --format sarif \
+            --out tfsec-results.sarif \
+            --force-all-dirs \
+            || true
           
           echo "✅ tfsec scan completed"
           ls -lh tfsec-results.sarif
@@ -76,6 +81,7 @@ jobs:
         with:
           sarif_file: tfsec-results.sarif
           category: tfsec
+          checkout_path: ${{ github.workspace }}
       
       # Scan for secrets
       - name: Run TruffleHog
