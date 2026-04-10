@@ -956,10 +956,6 @@ jobs:
                 fi
               done
               
-              echo "✅ Security Groups cleanup completed"{{ env.AWS_REGION }} --group-id $SG_ID 2>/dev/null || true
-                fi
-              done
-              
               echo "✅ Security Groups cleanup completed"
             fi
           fi
