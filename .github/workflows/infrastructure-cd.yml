@@ -55,22 +55,23 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
       
-      # Scan Terraform for misconfigurations (Using official action)
-      - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1.0.3
+      # Scan Terraform for misconfigurations (Using Trivy - Modern Standard)
+      - name: Run Trivy vulnerability scanner in IaC mode
+        uses: aquasecurity/trivy-action@master
         with:
-          working_directory: terraform
-          soft_fail: true
-          # Action tự động tạo file tfsec.sarif ở thư mục gốc
-          # và đã fix sẵn vấn đề git:// vs file:// URI scheme
+          scan-type: 'config'
+          scan-ref: 'terraform'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '0'  # Soft fail: không block pipeline
       
       # Upload results to GitHub Security
-      - name: Upload tfsec Results
+      - name: Upload Trivy Results
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: tfsec.sarif
-          category: tfsec
+          sarif_file: trivy-results.sarif
+          category: trivy-iac
       
       # Scan for secrets
       - name: Run TruffleHog
