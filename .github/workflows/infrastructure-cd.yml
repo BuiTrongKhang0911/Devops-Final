@@ -62,7 +62,7 @@ jobs:
           working_directory: terraform
           soft_fail: true
           format: sarif
-          sarif_file: tfsec-results.sarif
+          additional_args: --out tfsec-results.sarif
       
       # Upload results to GitHub Security
       - name: Upload tfsec Results
