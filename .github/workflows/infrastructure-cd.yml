@@ -1014,31 +1014,46 @@ jobs:
           if aws s3 ls "s3://${BUCKET_NAME}" 2>/dev/null; then
             echo "Found S3 bucket: ${BUCKET_NAME}"
             
-            # Remove all objects and versions
-            echo "  Removing all objects..."
+            # Remove all objects (including folders)
+            echo "  Removing all objects and folders..."
             aws s3 rm "s3://${BUCKET_NAME}" --recursive 2>/dev/null || true
+            
+            # List and delete all remaining objects using API (catches folders)
+            echo "  Ensuring all objects are deleted..."
+            aws s3api list-objects-v2 --bucket "${BUCKET_NAME}" --query 'Contents[].Key' --output text 2>/dev/null | \
+              tr '\t' '\n' | \
+              while read key; do
+                [ -n "$key" ] && aws s3api delete-object --bucket "${BUCKET_NAME}" --key "$key" 2>/dev/null || true
+              done
             
             # Remove versions and delete markers (if versioning enabled)
             echo "  Removing versions and delete markers..."
             aws s3api list-object-versions \
               --bucket "${BUCKET_NAME}" \
               --output json 2>/dev/null | \
-              jq -r '.Versions[]?, .DeleteMarkers[]? | "--key \"\(.Key)\" --version-id \"\(.VersionId)\""' 2>/dev/null | \
-              xargs -I {} aws s3api delete-object --bucket "${BUCKET_NAME}" {} 2>/dev/null || true
+              jq -r '.Versions[]?, .DeleteMarkers[]? | "\(.Key) \(.VersionId)"' 2>/dev/null | \
+              while read key versionId; do
+                [ -n "$key" ] && aws s3api delete-object --bucket "${BUCKET_NAME}" --key "$key" --version-id "$versionId" 2>/dev/null || true
+              done
             
-            # Delete bucket
+            # Final check and delete bucket
             echo "  Deleting S3 bucket..."
-            aws s3 rb "s3://${BUCKET_NAME}" --force 2>/dev/null && {
-              echo "✅ S3 bucket deleted"
-            } || {
-              echo "⚠️ Bucket not empty, retrying..."
-              aws s3 rm "s3://${BUCKET_NAME}" --recursive --force 2>/dev/null || true
+            REMAINING=$(aws s3api list-objects-v2 --bucket "${BUCKET_NAME}" --query 'Contents | length(@)' --output text 2>/dev/null || echo "0")
+            
+            if [ "$REMAINING" = "0" ] || [ "$REMAINING" = "None" ]; then
+              aws s3 rb "s3://${BUCKET_NAME}" --force 2>/dev/null && {
+                echo "✅ S3 bucket deleted"
+              } || {
+                echo "❌ Failed to delete bucket"
+              }
+            else
+              echo "⚠️ Bucket still has $REMAINING objects, forcing final cleanup..."
               aws s3 rb "s3://${BUCKET_NAME}" --force 2>/dev/null && {
                 echo "✅ S3 bucket deleted"
               } || {
                 echo "❌ Failed to delete bucket - manual cleanup required"
               }
-            }
+            fi
           else
             echo "⚠️ S3 bucket not found or already deleted"
           fi
