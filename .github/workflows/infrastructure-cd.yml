@@ -475,7 +475,7 @@ jobs:
           kubectl get ingress -n devops-final
       
       - name: Wait for ALB Creation and Create DNS Records
-        if: secrets.DOMAIN_NAME != ''
+        if: ${{ secrets.DOMAIN_NAME != '' }}
         run: |
           echo "⏳ Waiting for ALB to be created..."
           
@@ -671,7 +671,7 @@ jobs:
           fi
       
       - name: Delete Route53 DNS Records
-        if: secrets.DOMAIN_NAME != ''
+        if: ${{ secrets.DOMAIN_NAME != '' }}
         run: |
           echo "🧹 Step 3: Deleting Route53 DNS records..."
           
@@ -882,7 +882,7 @@ jobs:
             -var="alert_email_password=${{ secrets.ALERT_EMAIL_PASSWORD }}"
       
       - name: Cleanup S3 Backend Bucket
-        if: secrets.TF_BACKEND_BUCKET != ''
+        if: ${{ secrets.TF_BACKEND_BUCKET != '' }}
         run: |
           echo "🧹 Step 6: Cleaning up Terraform backend (S3 + DynamoDB)..."
           
