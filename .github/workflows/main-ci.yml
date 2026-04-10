@@ -26,11 +26,64 @@ env:
 
 jobs:
   # ===========================================================================
+  # JOB 0: WAIT FOR INFRASTRUCTURE (Smart Check)
+  # ===========================================================================
+  wait-for-infrastructure:
+    name: Wait for Infrastructure
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Check Infrastructure Workflow Status
+        run: |
+          echo "🔍 Checking if infrastructure workflow is running..."
+          
+          # Get latest infrastructure workflow run for this commit
+          INFRA_RUN=$(gh api repos/${{ github.repository }}/actions/workflows/infrastructure-cd.yml/runs \
+            --jq ".workflow_runs[] | select(.head_sha==\"${{ github.sha }}\") | {id: .id, status: .status, conclusion: .conclusion}" \
+            | head -n 1)
+          
+          if [ -z "$INFRA_RUN" ]; then
+            echo "✅ No infrastructure workflow for this commit"
+            exit 0
+          fi
+          
+          INFRA_STATUS=$(echo $INFRA_RUN | jq -r '.status')
+          INFRA_ID=$(echo $INFRA_RUN | jq -r '.id')
+          INFRA_CONCLUSION=$(echo $INFRA_RUN | jq -r '.conclusion')
+          
+          echo "Infrastructure workflow ID: $INFRA_ID"
+          echo "Status: $INFRA_STATUS"
+          echo "Conclusion: $INFRA_CONCLUSION"
+          
+          if [ "$INFRA_STATUS" == "in_progress" ] || [ "$INFRA_STATUS" == "queued" ]; then
+            echo "⏳ Infrastructure workflow đang chạy..."
+            echo "⏳ Đợi infrastructure hoàn thành trước khi build application..."
+            
+            # Đợi infrastructure xong
+            gh run watch $INFRA_ID --exit-status
+            
+            echo "✅ Infrastructure workflow hoàn thành!"
+          elif [ "$INFRA_STATUS" == "completed" ]; then
+            if [ "$INFRA_CONCLUSION" == "success" ]; then
+              echo "✅ Infrastructure workflow đã hoàn thành thành công"
+            else
+              echo "❌ Infrastructure workflow failed với conclusion: $INFRA_CONCLUSION"
+              echo "⚠️  Không thể build application khi infrastructure failed"
+              exit 1
+            fi
+          else
+            echo "✅ Infrastructure workflow không đang chạy"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+  
+  # ===========================================================================
   # JOB 1: BUILD & PUSH BACKEND IMAGE
   # ===========================================================================
   build-backend:
     name: Build Backend Docker Image
     runs-on: ubuntu-latest
+    needs: wait-for-infrastructure
 
     steps:
       # =========================================================================
@@ -143,6 +196,7 @@ jobs:
   build-frontend:
     name: Build Frontend Docker Image
     runs-on: ubuntu-latest
+    needs: wait-for-infrastructure
 
     steps:
       # =========================================================================

@@ -53,8 +53,6 @@
       postgresql_user:
         name: "{{ db_user }}"
         password: "{{ db_password }}"
-        db: "{{ db_name }}"
-        priv: ALL
         state: present
 
     - name: Grant all privileges to user
@@ -88,8 +86,6 @@
       postgresql_user:
         name: "{{ db_user_staging }}"
         password: "{{ db_password }}"
-        db: "{{ db_name_staging }}"
-        priv: ALL
         state: present
 
     - name: Grant all privileges to staging user
