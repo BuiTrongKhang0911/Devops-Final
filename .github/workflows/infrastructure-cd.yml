@@ -55,33 +55,22 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
       
-      # Scan Terraform for misconfigurations (Direct execution)
-      - name: Install and Run tfsec
-        run: |
-          echo "📦 Installing tfsec..."
-          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
-          
-          echo "🔍 Running tfsec scan..."
-          # Quét thư mục terraform, xuất ra file SARIF ở thư mục gốc
-          # --force-all-dirs: Fix URI scheme issue
-          # || true để không fail pipeline nếu có issues (soft_fail)
-          tfsec terraform/ \
-            --format sarif \
-            --out tfsec-results.sarif \
-            --force-all-dirs \
-            || true
-          
-          echo "✅ tfsec scan completed"
-          ls -lh tfsec-results.sarif
+      # Scan Terraform for misconfigurations (Using official action)
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: terraform
+          soft_fail: true
+          # Action tự động tạo file tfsec.sarif ở thư mục gốc
+          # và đã fix sẵn vấn đề git:// vs file:// URI scheme
       
       # Upload results to GitHub Security
       - name: Upload tfsec Results
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: tfsec-results.sarif
+          sarif_file: tfsec.sarif
           category: tfsec
-          checkout_path: ${{ github.workspace }}
       
       # Scan for secrets
       - name: Run TruffleHog
