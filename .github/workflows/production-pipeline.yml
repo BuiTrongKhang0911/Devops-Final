@@ -1,0 +1,567 @@
+# =============================================================================
+# PRODUCTION-PIPELINE.YML - Linear Promotion Pipeline
+# =============================================================================
+# Mục đích: Build Once, Deploy Anywhere (Staging → Production)
+# Trigger: Push to main branch (src/** or kubernetes/**)
+# Flow: Build → Deploy Staging → [Manual Approve] → Deploy Production
+# Nguyên tắc: Sử dụng CÙNG MỘT Docker image SHA cho cả Staging và Production
+# =============================================================================
+
+name: Production Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'kubernetes/base/backend/deployment.yaml'
+      - 'kubernetes/base/frontend/deployment.yaml'
+      - 'kubernetes/staging/backend-deployment.yaml'
+      - 'kubernetes/staging/frontend-deployment.yaml'
+      - '.github/workflows/production-pipeline.yml'
+
+# Ngăn chặn chạy đồng thời nhiều workflow cho cùng branch
+concurrency:
+  group: production-${{ github.sha }}
+  cancel-in-progress: true
+
+env:
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  AWS_REGION: ap-southeast-1
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+
+jobs:
+  # ===========================================================================
+  # JOB 0: WAIT FOR INFRASTRUCTURE (Smart Check)
+  # ===========================================================================
+  wait-for-infrastructure:
+    name: Wait for Infrastructure
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Check Infrastructure Workflow Status
+        run: |
+          echo "🔍 Checking if infrastructure workflow is running..."
+          
+          # Get latest infrastructure workflow run for this commit
+          INFRA_RUN=$(gh api repos/${{ github.repository }}/actions/workflows/infrastructure-cd.yml/runs \
+            --jq ".workflow_runs[] | select(.head_sha==\"${{ github.sha }}\") | {id: .id, status: .status, conclusion: .conclusion}" \
+            | head -n 1)
+          
+          if [ -z "$INFRA_RUN" ]; then
+            echo "✅ No infrastructure workflow for this commit"
+            exit 0
+          fi
+          
+          INFRA_STATUS=$(echo $INFRA_RUN | jq -r '.status')
+          INFRA_ID=$(echo $INFRA_RUN | jq -r '.id')
+          INFRA_CONCLUSION=$(echo $INFRA_RUN | jq -r '.conclusion')
+          
+          echo "Infrastructure workflow ID: $INFRA_ID"
+          echo "Status: $INFRA_STATUS"
+          echo "Conclusion: $INFRA_CONCLUSION"
+          
+          if [ "$INFRA_STATUS" == "in_progress" ] || [ "$INFRA_STATUS" == "queued" ]; then
+            echo "⏳ Infrastructure workflow đang chạy..."
+            echo "⏳ Đợi infrastructure hoàn thành trước khi build application..."
+            
+            # Đợi infrastructure xong
+            gh run watch $INFRA_ID --exit-status
+            
+            echo "✅ Infrastructure workflow hoàn thành!"
+          elif [ "$INFRA_STATUS" == "completed" ]; then
+            if [ "$INFRA_CONCLUSION" == "success" ]; then
+              echo "✅ Infrastructure workflow đã hoàn thành thành công"
+            else
+              echo "❌ Infrastructure workflow failed với conclusion: $INFRA_CONCLUSION"
+              echo "⚠️  Không thể build application khi infrastructure failed"
+              exit 1
+            fi
+          else
+            echo "✅ Infrastructure workflow không đang chạy"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # PHASE 1: BUILD & SCAN BACKEND
+  # ===========================================================================
+  build-backend:
+    name: Build & Scan Backend
+    runs-on: ubuntu-latest
+    needs: wait-for-infrastructure
+
+    steps:
+      # =========================================================================
+      # BƯỚC 1: Checkout code
+      # =========================================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # =========================================================================
+      # BƯỚC 2: Tạo SHORT_SHA để tag image
+      # =========================================================================
+      - name: Generate Image Tag
+        id: tag
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "📦 Image tag: sha-${SHORT_SHA}"
+
+      # =========================================================================
+      # BƯỚC 3: Setup Java 21 + Maven Cache
+      # =========================================================================
+      - name: Setup Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+          cache-dependency-path: 'src/backend/pom.xml'
+
+      # =========================================================================
+      # BƯỚC 4: Build JAR artifact (skip tests)
+      # =========================================================================
+      - name: Build Application JAR
+        working-directory: src/backend
+        run: mvn clean package -DskipTests --batch-mode --no-transfer-progress
+
+      # =========================================================================
+      # BƯỚC 5: Setup Docker Buildx
+      # =========================================================================
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # =========================================================================
+      # BƯỚC 6: Login to Docker Hub
+      # =========================================================================
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # =========================================================================
+      # BƯỚC 7: Build và Load image vào Docker local (chưa push)
+      # =========================================================================
+      - name: Build and Load Backend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/backend
+          load: true
+          tags: ${{ env.DOCKER_USERNAME }}/document-management-backend:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # BƯỚC 8: Quét bảo mật với Trivy (chỉ chặn CRITICAL)
+      # =========================================================================
+      - name: Run Trivy Security Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_USERNAME }}/document-management-backend:scan
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL'
+          ignore-unfixed: true
+
+      # =========================================================================
+      # BƯỚC 9: Push image lên Docker Hub với tag SHA
+      # =========================================================================
+      - name: Push Backend Image to Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: src/backend
+          push: true
+          tags: |
+            ${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${{ steps.tag.outputs.short_sha }}
+          cache-from: type=gha
+
+      # =========================================================================
+      # BƯỚC 10: Output thông tin image
+      # =========================================================================
+      - name: Print Backend Image Info
+        run: |
+          echo "============================================="
+          echo "✅ Backend Image Built & Pushed"
+          echo "============================================="
+          echo "Image: ${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${{ steps.tag.outputs.short_sha }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Security: Trivy scan PASSED"
+          echo "============================================="
+
+  # ===========================================================================
+  # PHASE 1: BUILD & SCAN FRONTEND
+  # ===========================================================================
+  build-frontend:
+    name: Build & Scan Frontend
+    runs-on: ubuntu-latest
+    needs: wait-for-infrastructure
+
+    steps:
+      # =========================================================================
+      # BƯỚC 1: Checkout code
+      # =========================================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # =========================================================================
+      # BƯỚC 2: Tạo SHORT_SHA để tag image
+      # =========================================================================
+      - name: Generate Image Tag
+        id: tag
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "📦 Image tag: sha-${SHORT_SHA}"
+
+      # =========================================================================
+      # BƯỚC 3: Setup Node.js + NPM Cache
+      # =========================================================================
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'src/frontend/package-lock.json'
+
+      # =========================================================================
+      # BƯỚC 4: Install dependencies & Build
+      # =========================================================================
+      - name: Install Dependencies
+        working-directory: src/frontend
+        run: npm ci
+
+      - name: Build Frontend
+        working-directory: src/frontend
+        run: npm run build
+
+      # =========================================================================
+      # BƯỚC 5: Setup Docker Buildx
+      # =========================================================================
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # =========================================================================
+      # BƯỚC 6: Login to Docker Hub
+      # =========================================================================
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # =========================================================================
+      # BƯỚC 7: Build và Load image vào Docker local (chưa push)
+      # =========================================================================
+      - name: Build and Load Frontend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: src/frontend
+          load: true
+          tags: ${{ env.DOCKER_USERNAME }}/document-management-frontend:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # BƯỚC 8: Quét bảo mật với Trivy (chỉ chặn CRITICAL)
+      # =========================================================================
+      - name: Run Trivy Security Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_USERNAME }}/document-management-frontend:scan
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL'
+          ignore-unfixed: true
+
+      # =========================================================================
+      # BƯỚC 9: Push image lên Docker Hub với tag SHA
+      # =========================================================================
+      - name: Push Frontend Image to Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: src/frontend
+          push: true
+          tags: |
+            ${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${{ steps.tag.outputs.short_sha }}
+          cache-from: type=gha
+
+      # =========================================================================
+      # BƯỚC 10: Output thông tin image
+      # =========================================================================
+      - name: Print Frontend Image Info
+        run: |
+          echo "============================================="
+          echo "✅ Frontend Image Built & Pushed"
+          echo "============================================="
+          echo "Image: ${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${{ steps.tag.outputs.short_sha }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Security: Trivy scan PASSED"
+          echo "============================================="
+
+  # ===========================================================================
+  # PHASE 2: DEPLOY TO STAGING
+  # ===========================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-backend, build-frontend]
+    
+    # Optional: Có thể thêm environment protection cho staging
+    environment:
+      name: staging
+      url: https://staging.devops-midterm.online
+
+    steps:
+      # =========================================================================
+      # BƯỚC 1: Checkout code
+      # =========================================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # =========================================================================
+      # BƯỚC 2: Tạo SHORT_SHA (ĐÚNG SHA từ build phase)
+      # =========================================================================
+      - name: Generate Image Tag
+        id: tag
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "📦 Deploying image tag: sha-${SHORT_SHA}"
+
+      # =========================================================================
+      # BƯỚC 3: Configure AWS Credentials
+      # =========================================================================
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # =========================================================================
+      # BƯỚC 4: Configure kubectl
+      # =========================================================================
+      - name: Configure kubectl for EKS
+        run: |
+          echo "⚙️ Configuring kubectl for EKS..."
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          kubectl version --client
+          kubectl cluster-info
+
+      # =========================================================================
+      # BƯỚC 5: Update Deployment với image tag SHA
+      # =========================================================================
+      - name: Update Staging Deployments
+        run: |
+          SHORT_SHA="${{ steps.tag.outputs.short_sha }}"
+          
+          echo "🚀 Deploying to Staging with image tag: sha-${SHORT_SHA}"
+          
+          # Update backend deployment
+          kubectl set image deployment/backend \
+            backend=${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${SHORT_SHA} \
+            -n staging
+          
+          # Update frontend deployment
+          kubectl set image deployment/frontend \
+            frontend=${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${SHORT_SHA} \
+            -n staging
+          
+          echo "✅ Deployment images updated"
+
+      # =========================================================================
+      # BƯỚC 6: Wait for rollout
+      # =========================================================================
+      - name: Wait for Staging Rollout
+        run: |
+          echo "⏳ Waiting for rollout to complete..."
+          kubectl rollout status deployment/backend -n staging --timeout=5m
+          kubectl rollout status deployment/frontend -n staging --timeout=5m
+          echo "✅ Rollout completed successfully"
+
+      # =========================================================================
+      # BƯỚC 7: Verify deployment
+      # =========================================================================
+      - name: Verify Staging Deployment
+        run: |
+          echo ""
+          echo "============================================="
+          echo "📊 STAGING DEPLOYMENT STATUS"
+          echo "============================================="
+          echo ""
+          echo "🔹 Pods:"
+          kubectl get pods -n staging -o wide
+          echo ""
+          echo "🔹 Services:"
+          kubectl get svc -n staging
+          echo ""
+          echo "🔹 Ingress:"
+          kubectl get ingress -n staging
+          echo ""
+          echo "============================================="
+
+      # =========================================================================
+      # BƯỚC 8: Print summary
+      # =========================================================================
+      - name: Print Staging Deployment Summary
+        run: |
+          SHORT_SHA="${{ steps.tag.outputs.short_sha }}"
+          
+          echo ""
+          echo "============================================="
+          echo "✅ STAGING DEPLOYMENT SUCCESSFUL"
+          echo "============================================="
+          echo ""
+          echo "📦 Backend: ${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${SHORT_SHA}"
+          echo "📦 Frontend: ${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${SHORT_SHA}"
+          echo "🌐 URL: https://staging.devops-midterm.online"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "� Deployed by: ${{ github.actor }}"
+          echo ""
+          echo "⏭️  Next: Manual approval required for Production deployment"
+          echo "============================================="
+
+  # ===========================================================================
+  # PHASE 3: DEPLOY TO PRODUCTION (MANUAL APPROVAL REQUIRED)
+  # ===========================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    
+    # ⚠️ CRITICAL: Manual approval gate for production
+    environment:
+      name: production
+      url: https://devops-midterm.online
+
+    steps:
+      # =========================================================================
+      # BƯỚC 1: Checkout code
+      # =========================================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # =========================================================================
+      # BƯỚC 2: Tạo SHORT_SHA (ĐÚNG SHA từ build phase)
+      # =========================================================================
+      - name: Generate Image Tag
+        id: tag
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "📦 Deploying image tag: sha-${SHORT_SHA}"
+
+      # =========================================================================
+      # BƯỚC 3: Configure AWS Credentials
+      # =========================================================================
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # =========================================================================
+      # BƯỚC 4: Configure kubectl
+      # =========================================================================
+      - name: Configure kubectl for EKS
+        run: |
+          echo "⚙️ Configuring kubectl for EKS..."
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          kubectl version --client
+          kubectl cluster-info
+
+      # =========================================================================
+      # BƯỚC 5: Update Deployment image tags
+      # =========================================================================
+      - name: Update Deployment Images
+        run: |
+          SHORT_SHA="${{ steps.tag.outputs.short_sha }}"
+          
+          echo "� Deploying commit: ${{ github.sha }}"
+          echo "📦 Image tag: sha-${SHORT_SHA}"
+          
+          # Update backend deployment
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
+            kubernetes/base/backend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" \
+            kubernetes/base/backend/deployment.yaml
+          
+          # Update frontend deployment
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
+            kubernetes/base/frontend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" \
+            kubernetes/base/frontend/deployment.yaml
+          
+          echo "✅ Image tags updated to: sha-${SHORT_SHA}"
+
+      # =========================================================================
+      # BƯỚC 6: Deploy Application
+      # =========================================================================
+      - name: Deploy Application
+        run: |
+          set -e
+          
+          echo "🚀 Deploying Application to EKS..."
+          
+          # Deploy backend
+          echo "📦 Deploying Backend..."
+          kubectl apply -f kubernetes/base/backend/deployment.yaml
+          
+          # Deploy frontend
+          echo "📦 Deploying Frontend..."
+          kubectl apply -f kubernetes/base/frontend/deployment.yaml
+          
+          # Force rollout to pull new images
+          echo "🔄 Rolling out new images..."
+          kubectl rollout restart deployment/backend -n devops-final
+          kubectl rollout restart deployment/frontend -n devops-final
+          
+          # Wait for rollout to complete
+          echo "⏳ Waiting for rollout to complete..."
+          kubectl rollout status deployment/backend -n devops-final --timeout=180s
+          kubectl rollout status deployment/frontend -n devops-final --timeout=180s
+          
+          echo "✅ Application deployed successfully!"
+
+      # =========================================================================
+      # BƯỚC 7: Verify Deployment
+      # =========================================================================
+      - name: Verify Deployment
+        run: |
+          echo ""
+          echo "📊 Current Pod Status:"
+          kubectl get pods -n devops-final -o wide
+          echo ""
+          echo "� Current Services:"
+          kubectl get svc -n devops-final
+          echo ""
+          echo "📊 Current Ingress:"
+          kubectl get ingress -n devops-final
+          echo ""
+          echo "� HPA Status:"
+          kubectl get hpa -n devops-final
+
+      # =========================================================================
+      # BƯỚC 8: Print Deployment Summary
+      # =========================================================================
+      - name: Print Deployment Summary
+        run: |
+          SHORT_SHA="${{ steps.tag.outputs.short_sha }}"
+          
+          echo "============================================="
+          echo "🎉 DEPLOYMENT COMPLETED!"
+          echo "============================================="
+          echo "Commit: ${{ github.sha }}"
+          echo "Backend Image: ${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${SHORT_SHA}"
+          echo "Frontend Image: ${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${SHORT_SHA}"
+          echo "EKS Cluster: ${{ env.EKS_CLUSTER_NAME }}"
+          echo "Region: ${{ env.AWS_REGION }}"
+          echo "Namespace: devops-final"
+          echo "============================================="
