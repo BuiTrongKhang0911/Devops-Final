@@ -522,8 +522,8 @@ jobs:
           
           # Wait for rollout to complete
           echo "⏳ Waiting for rollout to complete..."
-          kubectl rollout status deployment/backend -n devops-final --timeout=180s
-          kubectl rollout status deployment/frontend -n devops-final --timeout=180s
+          kubectl rollout status deployment/backend -n devops-final --timeout=600s
+          kubectl rollout status deployment/frontend -n devops-final --timeout=600s
           
           echo "✅ Application deployed successfully!"
 
