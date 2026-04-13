@@ -81,7 +81,7 @@ spec:
     kind: Deployment
     name: frontend
   minReplicas: 1
-  maxReplicas: 2  # Staging max 2 replicas
+  maxReplicas: 1  # Staging không scale, chỉ 1 pod
   metrics:
     - type: Resource
       resource:
@@ -94,4 +94,4 @@ spec:
         name: memory
         target:
           type: Utilization
-          averageUtilization: 80
+          averageUtilization: 90
