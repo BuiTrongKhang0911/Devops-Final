@@ -355,35 +355,32 @@ jobs:
           kubectl cluster-info
 
       # =========================================================================
-      # BƯỚC 5: Update Deployment với image tag SHA
+      # BƯỚC 5: Update Deployment Images
       # =========================================================================
-      - name: Update Staging Deployments
+      - name: Update Deployment Images
         run: |
           SHORT_SHA="${{ steps.tag.outputs.short_sha }}"
           
-          echo "🚀 Deploying to Staging with image tag: sha-${SHORT_SHA}"
-          
           # Update backend deployment
-          kubectl set image deployment/backend \
-            backend=${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${SHORT_SHA} \
-            -n staging
+          cat kubernetes/staging/backend-deployment.yaml | \
+            sed "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" | \
+            sed "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" | \
+            kubectl apply -f -
           
           # Update frontend deployment
-          kubectl set image deployment/frontend \
-            frontend=${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${SHORT_SHA} \
-            -n staging
-          
-          echo "✅ Deployment images updated"
+          cat kubernetes/staging/frontend-deployment.yaml | \
+            sed "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" | \
+            sed "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" | \
+            kubectl apply -f -
 
       # =========================================================================
-      # BƯỚC 6: Wait for rollout
+      # BƯỚC 6: Wait for Deployment
       # =========================================================================
-      - name: Wait for Staging Rollout
+      - name: Wait for Deployment
         run: |
-          echo "⏳ Waiting for rollout to complete..."
+          echo "⏳ Waiting for deployments to be ready..."
           kubectl rollout status deployment/backend -n staging --timeout=5m
           kubectl rollout status deployment/frontend -n staging --timeout=5m
-          echo "✅ Rollout completed successfully"
 
       # =========================================================================
       # BƯỚC 7: Verify deployment
