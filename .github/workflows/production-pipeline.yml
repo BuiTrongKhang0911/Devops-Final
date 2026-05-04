@@ -477,53 +477,36 @@ jobs:
           kubectl cluster-info
 
       # =========================================================================
-      # BƯỚC 5: Update Deployment image tags
-      # =========================================================================
-      - name: Update Deployment Images
-        run: |
-          SHORT_SHA="${{ steps.tag.outputs.short_sha }}"
-          
-          echo "� Deploying commit: ${{ github.sha }}"
-          echo "📦 Image tag: sha-${SHORT_SHA}"
-          
-          # Update backend deployment
-          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
-            kubernetes/base/backend/deployment.yaml
-          sed -i "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" \
-            kubernetes/base/backend/deployment.yaml
-          
-          # Update frontend deployment
-          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
-            kubernetes/base/frontend/deployment.yaml
-          sed -i "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" \
-            kubernetes/base/frontend/deployment.yaml
-          
-          echo "✅ Image tags updated to: sha-${SHORT_SHA}"
-
-      # =========================================================================
-      # BƯỚC 6: Deploy Application
+      # BƯỚC 5: Deploy Application with Image Update
       # =========================================================================
       - name: Deploy Application
         run: |
           set -e
           
+          SHORT_SHA="${{ steps.tag.outputs.short_sha }}"
+          
           echo "🚀 Deploying Application to EKS..."
+          echo "📦 Image tag: sha-${SHORT_SHA}"
+          echo ""
           
-          # Deploy backend
-          echo "📦 Deploying Backend..."
-          kubectl apply -f kubernetes/base/backend/deployment.yaml
+          # Update backend image (this creates a new revision)
+          echo "📦 Updating Backend image..."
+          kubectl set image deployment/backend \
+            backend=${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${SHORT_SHA} \
+            -n devops-final \
+            --record
           
-          # Deploy frontend
-          echo "📦 Deploying Frontend..."
-          kubectl apply -f kubernetes/base/frontend/deployment.yaml
+          # Update frontend image (this creates a new revision)
+          echo "📦 Updating Frontend image..."
+          kubectl set image deployment/frontend \
+            frontend=${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${SHORT_SHA} \
+            -n devops-final \
+            --record
           
-          # Force rollout to pull new images
-          echo "🔄 Rolling out new images..."
-          kubectl rollout restart deployment/backend -n devops-final
-          kubectl rollout restart deployment/frontend -n devops-final
+          echo "✅ Image tags updated to: sha-${SHORT_SHA}"
 
       # =========================================================================
-      # BƯỚC 7: Verify Deployment with Health Check
+      # BƯỚC 6: Verify Deployment with Health Check
       # =========================================================================
       - name: Verify Deployment Health
         id: verify
@@ -568,13 +551,6 @@ jobs:
           echo "📋 Deployment events:"
           kubectl describe deployment backend -n devops-final | tail -20
           echo ""
-          
-          # Delete failed/crashing pods to speed up rollback
-          echo "🗑️  Deleting failed and crashing pods..."
-          kubectl delete pods -n devops-final --field-selector=status.phase=Failed 2>/dev/null || true
-          kubectl get pods -n devops-final | grep -E 'Error|CrashLoopBackOff' | awk '{print $1}' | xargs -r kubectl delete pod -n devops-final 2>/dev/null || true
-          echo ""
-          
           echo "🔄 Rolling back to previous stable version..."
           echo ""
           
