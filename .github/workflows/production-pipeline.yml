@@ -430,7 +430,9 @@ jobs:
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
-    needs: [deploy-staging]
+    #needs: [deploy-staging]
+    needs: [build-backend, build-frontend]
+
     
     # ⚠️ CRITICAL: Manual approval gate for production
     environment:
