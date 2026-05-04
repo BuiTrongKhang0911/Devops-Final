@@ -489,21 +489,40 @@ jobs:
           echo "📦 Image tag: sha-${SHORT_SHA}"
           echo ""
           
-          # Update backend image (this creates a new revision)
-          echo "📦 Updating Backend image..."
+          # Step 1: Apply deployment.yaml to ensure all configs are up-to-date
+          echo "� Applying deployment configurations..."
+          
+          # Update backend deployment file
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
+            kubernetes/base/backend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" \
+            kubernetes/base/backend/deployment.yaml
+          
+          # Update frontend deployment file
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
+            kubernetes/base/frontend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" \
+            kubernetes/base/frontend/deployment.yaml
+          
+          # Apply configurations
+          kubectl apply -f kubernetes/base/backend/deployment.yaml
+          kubectl apply -f kubernetes/base/frontend/deployment.yaml
+          
+          echo ""
+          echo "📦 Updating images to create new revision..."
+          
+          # Step 2: Set image to create new revision for rollback
           kubectl set image deployment/backend \
             backend=${{ env.DOCKER_USERNAME }}/document-management-backend:sha-${SHORT_SHA} \
             -n devops-final \
             --record
           
-          # Update frontend image (this creates a new revision)
-          echo "📦 Updating Frontend image..."
           kubectl set image deployment/frontend \
             frontend=${{ env.DOCKER_USERNAME }}/document-management-frontend:sha-${SHORT_SHA} \
             -n devops-final \
             --record
           
-          echo "✅ Image tags updated to: sha-${SHORT_SHA}"
+          echo "✅ Deployment updated with new image: sha-${SHORT_SHA}"
 
       # =========================================================================
       # BƯỚC 6: Verify Deployment with Health Check
