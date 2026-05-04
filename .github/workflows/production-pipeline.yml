@@ -568,6 +568,13 @@ jobs:
           echo "📋 Deployment events:"
           kubectl describe deployment backend -n devops-final | tail -20
           echo ""
+          
+          # Delete failed/crashing pods to speed up rollback
+          echo "🗑️  Deleting failed and crashing pods..."
+          kubectl delete pods -n devops-final --field-selector=status.phase=Failed 2>/dev/null || true
+          kubectl get pods -n devops-final | grep -E 'Error|CrashLoopBackOff' | awk '{print $1}' | xargs -r kubectl delete pod -n devops-final 2>/dev/null || true
+          echo ""
+          
           echo "🔄 Rolling back to previous stable version..."
           echo ""
           
