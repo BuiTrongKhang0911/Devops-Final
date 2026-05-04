@@ -8,8 +8,8 @@ public class DocumentManagementApplication {
 
     public static void main(String[] args) {
         // TEST AUTOMATED ROLLBACK - Uncomment to trigger crash
-        //throw new RuntimeException("TEST: Automated Rollback - Application intentionally crashed");
+        throw new RuntimeException("TEST: Automated Rollback - Application intentionally crashed");
         
-        SpringApplication.run(DocumentManagementApplication.class, args);
+        //SpringApplication.run(DocumentManagementApplication.class, args);
     }
 }
