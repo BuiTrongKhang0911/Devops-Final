@@ -327,7 +327,7 @@ Go to your GitHub repository → Settings → Secrets and variables → Actions 
 | `AWS_KEY_NAME` | SSH key pair name from Prerequisites #3 | `Devops_Final` |
 | `EC2_SSH_PRIVATE_KEY` | Content of `Devops_Final.pem` file | `-----BEGIN RSA PRIVATE KEY-----...` |
 | `TF_BACKEND_BUCKET` | S3 bucket name from Deployment Step 2 | `devops-final-tfstate-abc123` |
-| `EKS_CLUSTER_NAME` | EKS cluster name | `devops-final-eks` |
+| `EKS_CLUSTER_NAME` | EKS cluster name (**⚠️ Nên để cứng là `devops-final-eks`**) | `devops-final-eks` |
 | `DOCKER_USERNAME` | Docker Hub username from Prerequisites #6 | `yourusername` |
 | `DOCKER_PASSWORD` | Docker Hub access token from Prerequisites #6 | `dckr_pat_...` |
 | `DB_PASSWORD` | PostgreSQL password (create strong password) | `YourStrongPassword123!` |
